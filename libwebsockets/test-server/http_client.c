@@ -83,6 +83,8 @@ int http_mgmt_param_init(http_mgmt* mgmt)
     mgmt->total_process = 0;
     mgmt->client_id = 0;
 
+    time(&mgmt->last_alive_time);
+
     return 0;
 }
 
@@ -769,10 +771,15 @@ int http_mgmt_run(http_mgmt* mgmt)
     // Set the prepare buffer timeout
     time(&now);
     if(mgmt->sync_prepare) {
-        if((now-mgmt->sync_time) > 8) {
+        if((now - mgmt->sync_time) > HTTP_TIMEOUT_SECS) {
             lwsl_info("reset the sync to zero\n");
             mgmt->sync_prepare = 0;
         }
+    }
+
+    if((now - mgmt->last_alive_time) > 4*HTTP_TIMEOUT_SECS) {
+        lwsl_info("Websocket timeout, reconnecting\n");
+        websocket_closed();
     }
 
     return 0;

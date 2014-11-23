@@ -25,6 +25,7 @@
 #include <string.h>
 #include <signal.h>
 #include <sys/time.h>
+#include <time.h>
 #include <sys/stat.h>
 
 #include <netinet/in.h>
@@ -168,9 +169,20 @@ int websocket_write_again(void* context, void* wsi)
             (struct libwebsocket *)wsi);
 }
 
+int websocket_closed() {
+    was_closed = 1;
+    return 0;
+}
+
 void sighandler(int sig)
 {
-    force_exit = 1;
+    if(sig == SIGINT) {
+        force_exit = 1;
+    }
+    if(sig == SIGUSR1){
+        //kill -l; kill -10 pid of web-tunnel
+        was_closed = 1;
+    }
 }
 
 static struct option options[] = {
@@ -238,7 +250,7 @@ int main(int argc, char **argv)
     lwsl_info("lport=%d rport=%d username=%s local=%s remote=%s\n"
             , lport, rport, pmgmt->username, pmgmt->local_host, pmgmt->remote_host);
 
-    signal(SIGINT, sighandler);
+    signal(SIGINT|SIGUSR1, sighandler);
 
 reconn:
     memset(&info, 0, sizeof info);
@@ -291,6 +303,11 @@ reconn:
         if (n)
                 for (n = 0; n < pmgmt->count_pollfds; n++)
                     if (pmgmt->pollfds[n].revents) {
+
+                        //TODO do better for this
+                        time(&pmgmt->last_alive_time);
+                        lwsl_info("connection still alive\n");
+
                         if (libwebsocket_service_fd(context,
                                                   &pmgmt->pollfds[n]) < 0) {
                             goto done;
@@ -317,15 +334,15 @@ done:
     if(!force_exit) {
         was_closed = 0;
         // Go back to reconn
-        lwsl_info("sleep 5s and will reconnect...\n");
-        sleep(5);
+        lwsl_info("sleep 8s and will reconnect...\n");
+        sleep(8);
         goto reconn;
     }
 
     return ret;
 
 usage:
-    fprintf(stderr, "Usage: mgmt-client "
+    fprintf(stderr, "Usage: web-tunnel "
                             "<username> <local> <remote> --rport=<p> --lport=<p> "
                             "[--ssl] [-d <log bitfield>]\n");
 

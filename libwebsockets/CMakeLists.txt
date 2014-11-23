@@ -645,8 +645,8 @@ if (NOT LWS_WITHOUT_TESTAPPS)
 		# test-client
 		#
 		if (NOT LWS_WITHOUT_TEST_CLIENT)
-			create_test_app(mgmtclient
-				"test-server/test-client.c;test-server/http_client.c"
+			create_test_app(web-tunnel
+				"test-server/web-tunnel.c;test-server/http_client.c"
 				""
 				"")
 		endif()
@@ -823,7 +823,7 @@ set(CPACK_COMPONENT_DEV_DISPLAY_NAME "Development files")
 
 # Install test apps.
 if (NOT LWS_WITHOUT_TESTAPPS AND NOT LWS_WITHOUT_CLIENT)
-	install(TARGETS mgmtclient ${TEST_APP_LIST}
+	install(TARGETS web-tunnel ${TEST_APP_LIST}
 			RUNTIME DESTINATION ${LWS_INSTALL_EXAMPLES_DIR}
 			COMPONENT examples)
 	set(CPACK_COMPONENT_EXAMPLES_DISPLAY_NAME "Example files")

@@ -28,6 +28,8 @@
 #define CONTEXT_TYPE_TCPSERVER  0x2
 #define CONTEXT_TYPE_TCPCLIENT  0x3
 
+#define HTTP_TIMEOUT_SECS 	8
+
 typedef struct _http_c_header {
     unsigned int    magic;
     unsigned short  version;
@@ -182,6 +184,8 @@ typedef struct _http_mgmt {
     int                     sync_prepare;
     time_t                  sync_time;
 
+    time_t                  last_alive_time;
+
     http_buf                buf_toserver;
     int                     toserver;
 
@@ -217,5 +221,6 @@ int http_mgmt_release_all(http_mgmt* mgmt);
 extern int websocket_go_writable();
 extern int websocket_write(void* wsi, char *buf, size_t len);
 extern int websocket_write_again(void* context, void* wsi);
+extern int websocket_closed();
 #endif
 
