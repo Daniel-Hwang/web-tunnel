@@ -18,3 +18,4 @@ README.build      - information on building the library
 README.coding     - information for writing code using the library
 README.test-apps  - information about the test apps built with the library
 
+注意：虽然我的代码是可以完全独立出来，而不改libwebsocket的任何代码。但是我懒，直接基于libwebsocket的编译环境写了我的web-tunnel 客户端。
