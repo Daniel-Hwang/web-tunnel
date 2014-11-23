@@ -198,9 +198,9 @@ int main(int argc, char **argv)
 {
     int n = 0;
     int ret = 0;
-    int rport = 8060;
+    int rport = 443;
     int lport = 80;
-    int use_ssl = 0;
+    int use_ssl = 1;
 //    unsigned int oldus = 0;
     struct libwebsocket_context *context;
     struct libwebsocket *wsi_dumb;
@@ -306,7 +306,7 @@ reconn:
 
                         //TODO do better for this
                         time(&pmgmt->last_alive_time);
-                        lwsl_info("connection still alive\n");
+                        //lwsl_info("connection still alive\n");
 
                         if (libwebsocket_service_fd(context,
                                                   &pmgmt->pollfds[n]) < 0) {
