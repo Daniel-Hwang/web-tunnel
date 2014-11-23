@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+ <meta charset=utf-8 />
+ <title>Minimal Websocket test app</title>
+</head>
+
+<body>
+<h2>libwebsockets "dumb-increment-protocol" test applet</h2>
+<div id="divLog"></div>
+<script>
+	var ws_ctor = window['MozWebSocket'] ? window['MozWebSocket'] : window['WebSocket'];
+	
+	var socket_di = new ws_ctor("ws://127.0.0.1:8060/abc",
+				   "dumb-increment-protocol");  
+	var divLog = document.getElementById("divLog");
+
+	try {
+		socket_di.onopen = function() {
+			divLog.innerHTML = divLog.innerHTML + 'onopen\n';
+		} 
+
+		socket_di.onmessage = function got_packet(msg) {
+			divLog.innerHTML = divLog.innerHTML + msg.data + '\n';
+		} 
+
+		socket_di.onclose = function(){
+			divLog.innerHTML = divLog.innerHTML + 'onclose\n';
+		}
+	} catch(exception) {
+		alert('<p>Error' + exception);  
+	}
+
+function reset() {
+	socket_di.send("reset\n");
+}
+
+function closeIncrementConnection() {
+  socket_di.close();
+}
+</script>
+
+</body>
+</html>

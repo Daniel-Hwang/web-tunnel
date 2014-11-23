@@ -1,33 +1,3 @@
-# Object files
-*.o
-*.ko
-*.obj
-*.elf
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Libraries
-*.lib
-*.a
-*.la
-*.lo
-
-# Shared objects (inc. Windows DLLs)
-*.dll
-*.so
-*.so.*
-*.dylib
-
-# Executables
-*.exe
-*.out
-*.app
-*.i*86
-*.x86_64
-*.hex
-
 #Ignore build files
 Makefile
 config.h
@@ -66,9 +36,8 @@ ltmain.sh
 config.sub
 ar-lib
 libwebsockets.pc
-libwebsockets/build/
+build/
 cscope.*
 tags
 Session.vim
 testsock
-nodejs-websocket-server/node_modules/
