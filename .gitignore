@@ -72,3 +72,4 @@ tags
 Session.vim
 testsock
 nodejs-websocket-server/node_modules/
+config.json

@@ -198,9 +198,9 @@ int main(int argc, char **argv)
 {
     int n = 0;
     int ret = 0;
-    int rport = 443;
+    int rport = 8060;
     int lport = 80;
-    int use_ssl = 1;
+    int use_ssl = 0;
 //    unsigned int oldus = 0;
     struct libwebsocket_context *context;
     struct libwebsocket *wsi_dumb;

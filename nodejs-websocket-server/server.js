@@ -461,24 +461,24 @@ function parseNormalMessage(conn, buffer) {
 	if(t == 0x5) {
 		var tmpseq = buffer.readUInt16BE(10);
 		var auth = buffer.readUInt32BE(16);
-
-	    var s = '{ \
-		"server":"106.186.99.88",\
-		"server_port":xxx,\
-		"local_port":xxx,\
-		"password":"xxxxxxxxxxx",\
-		"timeout":600,\
-		"method":"bf-cfb" \
-		}';
-
-		//console.log("seq " + tmpseq + " " + buffer.slice(protocolHeaderLen, buffer.length).toString());
 		console.log("seq " + tmpseq + " " + auth);
-		var tmp_len = Buffer.byteLength(s) + 4;
-		var tmp_buf = new Buffer(tmp_len);
-		tmp_buf.writeUInt32BE(tmp_len, 0);
-		tmp_buf.write(s, 4);
-		var buf2 = createReq([tmp_buf], 0x6, tmpseq);
-		conn.sendBytes(buf2);
+
+    		var filePath = path.join(__dirname, 'config.json');
+    		var readStream = fileSystem.createReadStream(filePath);
+		var filestr = "";
+		readStream.on('data', function(data) {
+			filestr += data;
+		});
+		readStream.on('end', function() {
+			console.log("config.json " + filestr);
+			var tmp_len = Buffer.byteLength(filestr) + 4;
+			var tmp_buf = new Buffer(tmp_len);
+			tmp_buf.writeUInt32BE(tmp_len, 0);
+			tmp_buf.write(filestr, 4);
+			var buf2 = createReq([tmp_buf], 0x6, tmpseq);
+			conn.sendBytes(buf2);
+		});
+
 		return;
 	}
 
