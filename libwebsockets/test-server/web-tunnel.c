@@ -191,8 +191,61 @@ static struct option options[] = {
 	{ "lport",	required_argument,	NULL, 'l' },
 	{ "rport",	required_argument,	NULL, 'r' },
 	{ "ssl",	no_argument,		NULL, 's' },
+	{ "pid",	no_argument,		NULL, 'p' },
 	{ NULL, 0, 0, 0 }
 };
+
+void daemonize(const char* path)
+{
+#ifndef __MINGW32__
+    /* Our process ID and Session ID */
+    pid_t pid, sid;
+
+    /* Fork off the parent process */
+    pid = fork();
+    if (pid < 0)
+    {
+        exit(EXIT_FAILURE);
+    }
+
+    /* If we got a good PID, then
+       we can exit the parent process. */
+    if (pid > 0)
+    {
+        FILE *file = fopen(path, "w");
+        if (file == NULL) fprintf(stderr, "Invalid pid file\n");
+
+        fprintf(file, "%d", pid);
+        fclose(file);
+        exit(EXIT_SUCCESS);
+    }
+
+    /* Change the file mode mask */
+    umask(0);
+
+    /* Open any logs here */
+
+    /* Create a new SID for the child process */
+    sid = setsid();
+    if (sid < 0)
+    {
+        /* Log the failure */
+        exit(EXIT_FAILURE);
+    }
+
+    /* Change the current working directory */
+    if ((chdir("/")) < 0)
+    {
+        /* Log the failure */
+        exit(EXIT_FAILURE);
+    }
+
+    /* Close out the standard file descriptors */
+    close(STDIN_FILENO);
+    close(STDOUT_FILENO);
+    close(STDERR_FILENO);
+#endif
+}
 
 int main(int argc, char **argv)
 {
@@ -201,6 +254,7 @@ int main(int argc, char **argv)
     int rport = 8060;
     int lport = 80;
     int use_ssl = 0;
+    char* pid_path = NULL;
 //    unsigned int oldus = 0;
     struct libwebsocket_context *context;
     struct libwebsocket *wsi_dumb;
@@ -212,13 +266,8 @@ int main(int argc, char **argv)
 
     lws_set_log_level(LLL_ERR | LLL_WARN | LLL_INFO, NULL);
 
-    pmgmt = &g_mgmt;
-    if(0 != http_mgmt_init(pmgmt)) {
-        return 1;
-    }
-
     while (n >= 0) {
-            n = getopt_long(argc, argv, "hsr:l:d:", options, NULL);
+            n = getopt_long(argc, argv, "hspr:l:d:", options, NULL);
             if (n < 0)
                     continue;
             switch (n) {
@@ -234,6 +283,9 @@ int main(int argc, char **argv)
             case 'l':
                 lport = atoi(optarg);
                 break;
+            case 'p':
+                pid_path = "/tmp/web-tunnel.pid";
+                break;
             case 'h':
                 goto usage;
             }
@@ -241,14 +293,23 @@ int main(int argc, char **argv)
     if (optind+2 >= argc)
             goto usage;
 
+    pmgmt = &g_mgmt;
+    if(0 != http_mgmt_init(pmgmt)) {
+        return 1;
+    }
+
     pmgmt->local_port = lport;
     pmgmt->remote_port = rport;
     strcpy(pmgmt->username, argv[optind]);
     strcpy(pmgmt->local_host, argv[optind+1]);
     strcpy(pmgmt->remote_host, argv[optind+2]);
-
+    
     lwsl_info("lport=%d rport=%d username=%s local=%s remote=%s\n"
             , lport, rport, pmgmt->username, pmgmt->local_host, pmgmt->remote_host);
+
+    if(NULL != pid_path) {
+        daemonize(pid_path);
+    }
 
     signal(SIGINT|SIGUSR1, sighandler);
 
@@ -344,7 +405,7 @@ done:
 usage:
     fprintf(stderr, "Usage: web-tunnel "
                             "<username> <local> <remote> --rport=<p> --lport=<p> "
-                            "[--ssl] [-d <log bitfield>]\n");
+                            "[--ssl] [-d <log bitfield>] [--pid]\n");
 
     return 1;
 
