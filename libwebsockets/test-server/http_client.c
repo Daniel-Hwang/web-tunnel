@@ -252,10 +252,10 @@ int http_mgmt_handshake(http_mgmt* mgmt)
     len += HTTP_C_HEADER_LEN;
 
     header.magic = htonl(HTTP_C_MAGIC);
-    header.version = htons(HTTP_C_VERSION);
-    header.type = htons(HTTP_C_HAND);
-    header.length = htons(len);
+    header.version = HTTP_C_VERSION;
+    header.type = HTTP_C_HAND;
     header.seq = 0;
+    header.length = htonl(len);
     header.reserved = 0;
 
     buf_info = alloc_buf(mgmt);
@@ -445,10 +445,9 @@ THE_END:
 int http_mgmt_prepare(http_mgmt* mgmt, char* buf, int len)
 {
     int i, tmp_len;
-    unsigned short length, seq;
-    unsigned int magic, const_magic = htonl(HTTP_C_MAGIC);
-    unsigned short version, const_version = htons(HTTP_C_VERSION);
-    unsigned short type;
+    unsigned short seq;
+    unsigned int magic, length, const_magic = htonl(HTTP_C_MAGIC);
+    unsigned char version, type;
     http_buf_info* buf_info = mgmt->buf_prepare.curr;
 
     assert(len < HTTP_BUF_SIZE);
@@ -464,26 +463,26 @@ int http_mgmt_prepare(http_mgmt* mgmt, char* buf, int len)
         memcpy(&magic, buf, 4);
         i += 4;
 
-        memcpy(&version, buf+i, 2);
-        i += 2;
+        memcpy(&version, buf+i, 1);
+        i += 1;
 
-        memcpy(&type, buf+i, 2);
-        i += 2;
-
-        memcpy(&length, buf+i, 2);
-        i += 2;
+        memcpy(&type, buf+i, 1);
+        i += 1;
 
         memcpy(&seq, buf+i, 2);
         seq = htons(seq);
         i+= 2;
 
+        memcpy(&length, buf+i, 4);
+        i += 4;
+
         if((magic != const_magic)
-                || (version != const_version) ) {
+                || (version != HTTP_C_VERSION) ) {
             lwsl_warn("get error magic from server\n");
             return 11;
         }
         release_prepare(mgmt);
-        length = htons(length);
+        length = htonl(length);
         if(length > HTTP_IN_MAX) {
             lwsl_warn("the total len=%d is too big, ignore it\n", length);
             return 12;
@@ -494,7 +493,7 @@ int http_mgmt_prepare(http_mgmt* mgmt, char* buf, int len)
         len -= HTTP_C_HEADER_LEN;
         length -= HTTP_C_HEADER_LEN;
         mgmt->buf_prepare.total_len = length;
-        mgmt->buf_prepare.type = htons(type);
+        mgmt->buf_prepare.type = type;
         mgmt->buf_prepare.seq = seq;
 
         lwsl_info("sync: seq=%d alllength=%u total_len=%d\n"
@@ -589,8 +588,8 @@ static void generate_error(http_mgmt* mgmt, http_context* ctx)
 
     //Init the header
     header.magic = htonl(HTTP_C_MAGIC);
-    header.version = htons(HTTP_C_VERSION);
-    header.type = htons(HTTP_C_RESP);
+    header.version = HTTP_C_VERSION;
+    header.type = HTTP_C_RESP;
     header.seq = htons(ctx->seq);
     header.reserved = 0;
 
@@ -1206,10 +1205,10 @@ int http_context_read(http_mgmt* mgmt, http_context* ctx)
 
             //Init the header
             header.magic = htonl(HTTP_C_MAGIC);
-            header.version = htons(HTTP_C_VERSION);
-            header.type = htons(HTTP_C_RESP);
+            header.version = HTTP_C_VERSION;
+            header.type = HTTP_C_RESP;
             ctx->buf_read.len += HTTP_C_HEADER_LEN;
-            header.length = htons(ctx->buf_read.len);
+            header.length = htonl(ctx->buf_read.len);
             header.seq = htons(ctx->seq);
             header.reserved = 0;
 
@@ -1481,9 +1480,9 @@ int process_tunnel_req(http_mgmt* mgmt)
     list_for_each_entry(tcp_client, &tcp_server->list_client, node) {
         /* TODO do better for this */
         header->magic = htonl(HTTP_C_MAGIC);
-        header->version = htons(HTTP_C_VERSION);
-        header->type = htons(HTTP_C_REQ);
-        header->length = htons(pbuf->len + HTTP_C_HEADER_LEN);
+        header->version = HTTP_C_VERSION;
+        header->type = HTTP_C_REQ;
+        header->length = htonl(pbuf->len + HTTP_C_HEADER_LEN);
         header->seq = htons(tcp_client->req_seq & 0xFF);     /* Low 8 Bytes is client seq */
         header->reserved = 0;
 
@@ -1532,9 +1531,9 @@ int process_tunnel_resp(http_mgmt* mgmt)
     }
 
     header->magic = htonl(HTTP_C_MAGIC);
-    header->version = htons(HTTP_C_VERSION);
-    header->type = htons(HTTP_C_RESP);
-    header->length = htons(pbuf->len + HTTP_C_HEADER_LEN);
+    header->version = HTTP_C_VERSION;
+    header->type = HTTP_C_RESP;
+    header->length = htonl(pbuf->len + HTTP_C_HEADER_LEN);
     header->seq = htons(tcp_client->req_seq & 0xFF);     /* Low 8 Bytes is client seq */
     header->reserved = 0;
 
@@ -1704,9 +1703,9 @@ int tcp_client_read(http_mgmt* mgmt, tcp_client_context* tcp_client)
                 tcp_server->seq = (tcp_server->seq+1) & 0xFF;
                 tcp_client->req_seq = (ntohs(header->seq) | (tcp_server->seq<<8));
                 header->seq = htons(tcp_client->req_seq);
-                header->type = htons(HTTP_C_TUNNELREQ);
+                header->type = HTTP_C_TUNNELREQ;
                 memcpy(buf_info->buf, header, HTTP_C_HEADER_LEN);
-                tcp_client->buf_read.total_len = ntohs(header->length);
+                tcp_client->buf_read.total_len = ntohl(header->length);
                 tcp_client->header_parsed = 1;
             }
 

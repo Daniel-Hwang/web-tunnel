@@ -380,10 +380,10 @@ function createReq(bufs, type, seq) {
     }
 
     buffer.writeUInt32BE(0x10293874, 0);   //Magic     0~4
-    buffer.writeUInt16BE(0x0001, 4);       //version   4~6
-    buffer.writeUInt16BE(type, 6);             //request   6~8
-    buffer.writeUInt16BE(total_len, 8);    //length    8~10
-    buffer.writeUInt16BE(seq, 10);          //seq        10~12
+    buffer.writeUInt8(0x01, 4);       //version   4~5
+    buffer.writeUInt8(type, 5);             //request   5~6
+    buffer.writeUInt16BE(seq, 6);          //seq        6~8
+    buffer.writeUInt32BE(total_len, 8);    //length    8~12
     buffer.writeUInt32BE(0x00000000, 12);   //Reserve   12~16
 
     console.log("createReq the total len is " + total_len);
@@ -403,11 +403,10 @@ function createReq2(bufs, type, seq) {
     }
 
     buffer.writeUInt32BE(0x10293874, 0);   //Magic     0~4
-    buffer.writeUInt16BE(0x0001, 4);       //version   4~6
-    buffer.writeUInt16BE(type, 6);             //request   6~8
-    buffer.writeUInt16BE(total_len, 8);    //length    8~10
-    console.log("seq = " + seq);
-    buffer.writeUInt16BE(seq, 10);          //seq        10~12
+    buffer.writeUInt8(0x01, 4);       //version   4~5
+    buffer.writeUInt8(type, 5);             //request   5~6
+    buffer.writeUInt16BE(seq, 6);          //seq        6~8
+    buffer.writeUInt32BE(total_len, 8);    //length    8~12
     buffer.writeUInt32BE(0x00000000, 12);   //Reserve   12~16
 
     console.log("createReq the total len is " + total_len);
@@ -450,8 +449,8 @@ function parseNormalMessage(conn, buffer) {
 
         // Wait for first message
         var magic = buffer.readUInt32BE(0);
-        var ver = buffer.readUInt16BE(4);
-        var t = buffer.readUInt16BE(6)
+        var ver = buffer.readUInt8(4);
+        var t = buffer.readUInt8(5);
         if((magic != 0x10293874)
            || (ver != 0x1)) {
                console.log("get first message error " + magic + " ver " + ver + " type " + t);
@@ -459,7 +458,7 @@ function parseNormalMessage(conn, buffer) {
         }
 
 	if(t == 0x5) {
-		var tmpseq = buffer.readUInt16BE(10);
+		var tmpseq = buffer.readUInt16BE(6);
 		var auth = buffer.readUInt32BE(16);
 		console.log("seq " + tmpseq + " " + auth);
 
@@ -482,8 +481,8 @@ function parseNormalMessage(conn, buffer) {
 		return;
 	}
 
-        mgr.curr_total = buffer.readUInt16BE(8);
-        mgr.curr_seq = buffer.readUInt16BE(10);
+        mgr.curr_seq = buffer.readUInt16BE(6);
+        mgr.curr_total = buffer.readUInt32BE(8);
         console.log("get curr_seq = " + mgr.curr_seq + "total len = " + mgr.curr_total);
         mgr.curr_total -=  protocolHeaderLen; //exclude the header length
 
@@ -505,12 +504,12 @@ function connectionParse(connection, message) {
 
     if(typeof connection.user == "undefined") {
         var magic = buffer.readUInt32BE(0);
-        var ver = buffer.readUInt16BE(4);
-        var t = buffer.readUInt16BE(6)
+        var ver = buffer.readUInt8(4);
+        var t = buffer.readUInt8(5);
         if((magic != 0x10293874)
            || (ver != 0x1)
            || (t != 0x3)) {
-               console.log("parse handshake message error");
+               console.log("parse handshake message error " + magic + " " + ver + " " + t);
             return;
         }
 

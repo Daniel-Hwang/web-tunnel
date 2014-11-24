@@ -32,10 +32,10 @@
 
 typedef struct _http_c_header {
     unsigned int    magic;
-    unsigned short  version;
-    unsigned short  type;
-    unsigned short  length;     /* Length include the header */
+    unsigned char  version;
+    unsigned char  type;
     unsigned short  seq;
+    unsigned int  length;     /* Length include the header */
     unsigned int    reserved;   /* the first byte is use to identify TODO */
 }__attribute__ ((packed)) http_c_header;
 
