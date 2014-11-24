@@ -6,14 +6,14 @@
 #  cmake .. -DCMAKE_TOOLCHAIN_FILE=../cross-arm-linux-gnueabihf.cmake
 #
 
-set(CROSS_PATH /opt/gcc-linaro-arm-linux-gnueabihf-4.7-2013.02-01-20130221_linux)
+set(CROSS_PATH /projects/asuswrt-merlin/release/src-rt-6.x.4708/toolchains/hndtools-arm-linux-2.6.36-uclibc-4.5.3)
 
 # Target operating system name.
 set(CMAKE_SYSTEM_NAME Linux)
 
 # Name of C compiler.
-set(CMAKE_C_COMPILER "${CROSS_PATH}/bin/arm-linux-gnueabihf-gcc")
-set(CMAKE_CXX_COMPILER "${CROSS_PATH}/bin/arm-linux-gnueabihf-g++")
+set(CMAKE_C_COMPILER "${CROSS_PATH}/bin/arm-brcm-linux-uclibcgnueabi-gcc")
+set(CMAKE_CXX_COMPILER "${CROSS_PATH}/bin/arm-brcm-linux-uclibcgnueabi-g++")
 
 # Where to look for the target environment. (More paths can be added here)
 set(CMAKE_FIND_ROOT_PATH "${CROSS_PATH}")
