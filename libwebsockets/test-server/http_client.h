@@ -19,8 +19,11 @@
 #define HTTP_C_SYNC         0x4
 #define HTTP_C_TUNNELREQ    0x5
 #define HTTP_C_TUNNELRESP   0x6
-#define HTTP_C_TELNET_REQ    0x10
-#define HTTP_C_TELNET_RESP   0x11
+
+#define HTTP_C_FORWARD 	      0x10
+#define HTTP_C_FORWARD_REQ    0x11
+#define HTTP_C_FORWARD_RESP   0x12
+
 #define HTTP_C_HEADER_LEN   sizeof(http_c_header)
 
 #define HTTP_C_EVT_AUTH 	0x88999966
@@ -30,6 +33,7 @@
 #define CONTEXT_TYPE_HTTP       0x1
 #define CONTEXT_TYPE_TCPSERVER  0x2
 #define CONTEXT_TYPE_TCPCLIENT  0x3
+#define CONTEXT_TYPE_FORWARD 	0x4
 
 #define HTTP_TIMEOUT_SECS 	8
 
@@ -45,10 +49,12 @@ typedef struct _http_c_header {
 struct _http_context;
 struct _tcp_server_context;
 struct _tcp_client_context;
+struct _tcp_forward_context;
 struct _http_mgmt;
 typedef int (*ASYNC_FUNC)(struct _http_mgmt*, struct _http_context*);
 typedef int (*TCP_SERV_FUNC)(struct _http_mgmt*, struct _tcp_server_context*);
 typedef int (*TCP_CLIENT_FUNC)(struct _http_mgmt*, struct _tcp_client_context*);
+typedef int (*TCP_FORWARD_FUNC)(struct _http_mgmt*, struct _tcp_forward_context*);
 
 typedef enum _CALLING_STATUS {
     CALLING_READY = 0,
@@ -169,6 +175,25 @@ typedef struct _tcp_server_context {
     char                    sock_path[128];
 } tcp_server_context;
 
+typedef struct _tcp_forward_context {
+    struct ccrContextTag    context;
+    int                     context_type;
+
+    struct list_head        node;
+    CALLING_STATUS          status;
+    TCP_FORWARD_FUNC 	    func_run;
+
+    http_buf                buf_read;
+    http_buf                buf_write;
+    int                     idle;
+    int 		    errcode;
+
+    struct pollfd*          pfd;
+    int                     fwd_fd;
+    int 		    port;
+    int 		    seq;
+} tcp_forward_context;
+
 typedef struct _http_mgmt {
     struct list_head        list_ready[CALLING_PRIO_COUNT];
     int                     ready_len;
@@ -201,7 +226,9 @@ typedef struct _http_mgmt {
     char            local_host[128];
     int             local_port;
 
-    tcp_server_context tcp_server;
+    tcp_server_context      tcp_server;
+    struct list_head 	    list_forward;
+    int 		    len_forward;
 
     struct list_head        ctx_caches;
     struct list_head        http_buf_caches;

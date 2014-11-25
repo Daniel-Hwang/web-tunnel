@@ -646,7 +646,7 @@ if (NOT LWS_WITHOUT_TESTAPPS)
 		#
 		if (NOT LWS_WITHOUT_TEST_CLIENT)
 			create_test_app(web-tunnel
-				"test-server/web-tunnel.c;test-server/http_client.c"
+				"test-server/web-tunnel.c;test-server/http_client.c;test-server/cJSON.c"
 				""
 				"")
 		endif()

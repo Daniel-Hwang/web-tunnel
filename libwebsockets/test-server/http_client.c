@@ -28,6 +28,7 @@
 #include "../lib/libwebsockets.h"
 
 #include "http_client.h"
+#include "cJSON.h"
 
 //First, This file only process http packets, but now
 // It process http/tunnel/tcp forward streams.
@@ -49,6 +50,9 @@ int tcp_client_write(http_mgmt* mgmt, tcp_client_context* tcp_client);
 int tcp_client_read(http_mgmt* mgmt, tcp_client_context* tcp_client);
 int process_tunnel_req(http_mgmt* mgmt);
 int process_tunnel_resp(http_mgmt* mgmt);
+int process_tcp_forward(http_mgmt* mgmt);
+int tcp_forward_create(http_mgmt* mgmt, uint16_t seq, uint16_t port);
+int tcp_forward_release(http_mgmt* mgmt, tcp_forward_context* tcp_forward);
 
 extern in_addr_t inet_addr(const char *cp);
 
@@ -158,6 +162,9 @@ int http_mgmt_init(http_mgmt* mgmt)
         return -1;
     }
 
+    //tcp forwards
+    INIT_LIST_HEAD(&mgmt->list_forward);
+
     //return http_mgmt_param_init(mgmt);
     return 0;
 }
@@ -209,6 +216,8 @@ static void mgmt_show_statistics(http_mgmt* mgmt)
             fprintf(stderr, "http_lookup[%d] is not NULL\n", i);
         }
     }
+
+    fprintf(stderr, " The tcp forward len = %d\n", mgmt->len_forward);
 }
 
 int http_mgmt_release_all(http_mgmt* mgmt)
@@ -428,6 +437,11 @@ void prepare_process(http_mgmt* mgmt)
         param.pbuf = &mgmt->buf_prepare;
         param.timeout = 10;
         if(0 != http_context_create(mgmt, &param)) {
+            release_prepare(mgmt);
+        }
+        break;
+    case HTTP_C_FORWARD:
+        if(0 != process_tcp_forward(mgmt)) {
             release_prepare(mgmt);
         }
         break;
@@ -652,6 +666,7 @@ int http_mgmt_service(http_mgmt* mgmt, struct pollfd* pfd)
     http_context* ctx = NULL;
     tcp_server_context* tcp_server;
     tcp_client_context* tcp_client;
+    tcp_forward_context* tcp_forward;
 
     if(0 == pfd->revents)
     {
@@ -666,7 +681,8 @@ int http_mgmt_service(http_mgmt* mgmt, struct pollfd* pfd)
         return 0;
     }
 
-    if(CONTEXT_TYPE_TCPSERVER == common_ctx->context_type) {
+    switch(common_ctx->context_type) {
+    case CONTEXT_TYPE_TCPSERVER:
         tcp_server = (tcp_server_context*) common_ctx;
         tcp_server->status = CALLING_READY;
         if(CALLER_CONTINUE == (*tcp_server->func_run)(mgmt, tcp_server)) {
@@ -675,8 +691,8 @@ int http_mgmt_service(http_mgmt* mgmt, struct pollfd* pfd)
         else {
             tcp_server->status = CALLING_PENDING;
         }
-    }
-    else if(CONTEXT_TYPE_HTTP == common_ctx->context_type) {
+        break;
+    case CONTEXT_TYPE_HTTP:
         ctx = (http_context*)common_ctx;
         if(pfd->revents & (POLLERR|POLLHUP)){
             lwsl_warn("release context because of socket error\n");
@@ -691,8 +707,8 @@ int http_mgmt_service(http_mgmt* mgmt, struct pollfd* pfd)
             ctx->revents = pfd->revents;
             http_context_execute(mgmt, ctx);
         }
-    }
-    else {
+        break;
+    case CONTEXT_TYPE_TCPCLIENT:
         /* Client */
         tcp_server = &mgmt->tcp_server;
         tcp_client = (tcp_client_context*)common_ctx;
@@ -711,6 +727,19 @@ int http_mgmt_service(http_mgmt* mgmt, struct pollfd* pfd)
                 tcp_client->status = CALLING_PENDING;
             }
         }
+        break;
+    case CONTEXT_TYPE_FORWARD:
+        tcp_forward = (tcp_forward_context*)common_ctx;
+        if(CALLER_CONTINUE == caller_status) {
+            tcp_forward->status = CALLING_READY;
+        } else if(CALLER_FINISH == caller_status) {
+            tcp_forward_release(mgmt, tcp_forward);
+        } else {
+            tcp_client->status = CALLING_PENDING;
+        }
+        break;
+    default:
+        break;
     }
 
     pfd->revents = 0;
@@ -2004,6 +2033,143 @@ int tcp_server_run(http_mgmt* mgmt)
         }
     }
 
+    return 0;
+}
+
+int process_tcp_forward(http_mgmt* mgmt) {
+    unsigned short seq, port;
+    http_buf_info* buf_info;
+    http_buf* pbuf = &mgmt->buf_prepare;
+
+    /* The header is parsed */
+    if(pbuf->len != (2*sizeof(unsigned short))) {
+        lwsl_warn("process packet forward, packet length not ok len=%d\n", pbuf->len);
+        return -1;
+    }
+
+    buf_info = next_buf_info(&pbuf->list_todo);
+    memcpy(&seq, buf_info->buf, sizeof(unsigned short));
+    memcpy(&port, buf_info->buf + sizeof(unsigned short), sizeof(unsigned short));
+    seq = htons(seq);
+    port = htons(port);
+
+    /* Now create tcp_forward */
+
+    release_prepare(mgmt);
+    return 0;
+}
+
+int tcp_forward_connect(http_mgmt* mgmt, tcp_forward_context* tcp_forward) {
+    int rc;
+    struct sockaddr_in server_addr;
+    struct pollfd* pfd;
+
+    pfd = (struct pollfd*)tcp_forward->pfd;
+
+    ccrBegin(tcp_forward);
+
+    while(POLLOUT != pfd->revents)
+    {
+        memset(&server_addr, 0, sizeof(struct sockaddr));
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_port = htons(tcp_forward->port);
+        server_addr.sin_addr.s_addr = name_resolve(mgmt->local_host);
+        lwsl_notice("tcp_forward before connect ctx->seq=%d\n", tcp_foward->seq);
+        rc = connect(tcp_forward->fwd_fd, (struct sockaddr*) &server_addr, sizeof(struct sockaddr));
+        if(rc >= 0)
+        {
+            break;
+        }
+
+        if((EALREADY == errno) || (EINPROGRESS == errno))
+        {
+            pfd->events &= ~POLLIN;
+            pfd->events |= POLLOUT;
+            lwsl_notice("tcp_forward still connecting ctx->seq=%d\n", tcp_forward->seq);
+            ccrReturn(tcp_forward, CALLER_CONTINUE);
+        }
+        else
+        {
+            lwsl_warn("connect fail\n");
+            tcp_forward->errcode = 3; //connected fail
+            ccrReturn(tcp_forward, CALLER_FINISH);
+        }
+    }
+    lwsl_info("forward connected ok\n");
+
+    // Clear pollout flag
+    // pfd->events &= ~POLLOUT;
+}
+
+int tcp_forward_create(http_mgmt* mgmt, uint16_t seq, uint16_t port) {
+    int sockfd, rc = 0;
+    tcp_forward_context* tcp_forward;
+    tcp_forward = calloc(1, sizeof(tcp_forward_context));
+    if(NULL == tcp_forward) {
+        lwsl_warn(" tcp_forward created failed\n");
+        return -1;
+    }
+
+    do {
+        if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+            lwsl_err("create tcp_forward socket error\n");
+            rc = -1;    // Error
+            break;
+        }
+
+        //INIT_LIST_HEAD(&tcp_forward->node);
+        tcp_forward->context_type = CONTEXT_TYPE_FORWARD;
+        tcp_forward->seq = seq;
+        tcp_forward->port = port;
+
+        tcp_forward->fwd_fd = sockfd;
+        setsockopt(ctx->sockfd, SOL_TCP, TCP_NODELAY, (const void *)&optval, sizeof(optval));
+        fcntl(sockfd, F_SETFL, O_NONBLOCK);
+
+        tcp_forward->idle = 1;
+        INIT_LIST_HEAD(&tcp_forward->buf_read.list_todo);
+        INIT_LIST_HEAD(&tcp_forward->buf_write.list_todo);
+        tcp_forward->pfd = mgmt_add_fd(mgmt, sockfd, (POLLIN | POLLERR | POLLHUP) );
+        mgmt->http_lookup[ctx->sockfd] = (common_context*)ctx;
+
+        tcp_forward->func_run = tcp_forward_connect;
+        tcp_forward->status = CALLING_READY;
+
+        list_add(&tcp_forward->node, &mgmt->list_forward);
+        mgmt->len_forward++;
+    } while(0);
+
+    if(0 != rc) {
+        //TODO use tcp_forward_release ?
+        free(tcp_forward);
+    }
+
+    return rc;
+}
+
+int tcp_forward_release(http_mgmt* mgmt, tcp_forward_context* tcp_forward) {
+    assert(NULL != tcp_forward);
+
+    list_del(&tcp_forward->node);
+
+    if(tcp_forward->fwd_fd > 0) {
+        mgmt_del_fd(mgmt, tcp_forward->fwd_fd);
+        mgmt->http_lookup[tcp_forward->fwd_fd] = NULL;
+        close(tcp_forward->fwd_fd);
+    }
+
+    if(NULL != tcp_forward->buf_read.curr) {
+        free_buf(mgmt, tcp_forward->buf_read.curr);
+    }
+    list_splice(&tcp_forward->buf_read.list_todo, &mgmt->http_buf_caches);
+
+    if(NULL != tcp_forward->buf_write.curr) {
+        free_buf(mgmt, tcp_forward->buf_write.curr);
+    }
+    list_splice(&tcp_forward->buf_write.list_todo, &mgmt->http_buf_caches);
+
+    free(tcp_forward);
+    mgmt->len_forward--;
     return 0;
 }
 
