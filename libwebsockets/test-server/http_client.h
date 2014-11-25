@@ -12,12 +12,15 @@
 
 #define HTTP_C_MAGIC        0x10293874
 #define HTTP_C_VERSION      0x1
+
 #define HTTP_C_REQ          0x1
 #define HTTP_C_RESP         0x2
 #define HTTP_C_HAND         0x3
 #define HTTP_C_SYNC         0x4
 #define HTTP_C_TUNNELREQ    0x5
 #define HTTP_C_TUNNELRESP   0x6
+#define HTTP_C_TELNET_REQ    0x10
+#define HTTP_C_TELNET_RESP   0x11
 #define HTTP_C_HEADER_LEN   sizeof(http_c_header)
 
 #define HTTP_C_EVT_AUTH 	0x88999966

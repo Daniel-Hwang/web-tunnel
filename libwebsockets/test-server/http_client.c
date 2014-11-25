@@ -29,6 +29,10 @@
 
 #include "http_client.h"
 
+//First, This file only process http packets, but now
+// It process http/tunnel/tcp forward streams.
+// TODO This file will be rewriten better in the feature
+
 // declare funcs TODO use static functions
 void http_context_release(http_mgmt* mgmt, http_context* ctx);
 int http_context_connect(http_mgmt* mgmt, http_context* ctx);
@@ -1596,14 +1600,14 @@ void generate_key(uint32_t* k)
 {
     int i = 3, n = 60;
     time_t t;
-    
+
     time(&t);
     k[i] = (uint32_t)t;
     k[i] = (k[i]+n-1) / n;
     k[i] = hash(k[i]);
 }
 
-void encry(uint32_t* v, uint32_t* k) 
+void encry(uint32_t* v, uint32_t* k)
 {
     uint32_t v0=v[0], v1=v[1], sum=0, i;           /* set up */
     uint32_t delta=0x9e3779b9;                     /* a key schedule constant */
@@ -1615,7 +1619,7 @@ void encry(uint32_t* v, uint32_t* k)
     }                                              /* end cycle */
     v[0]=v0; v[1]=v1;
 }
- 
+
 void decry(uint32_t* v, uint32_t* k) {
     uint32_t v0=v[0], v1=v[1], sum=0xC6EF3720, i;  /* set up */
     uint32_t delta=0x9e3779b9;                     /* a key schedule constant */
