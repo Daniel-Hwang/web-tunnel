@@ -183,7 +183,7 @@ typedef struct _tcp_forward_context {
     CALLING_STATUS          status;
     TCP_FORWARD_FUNC 	    func_run;
 
-    http_buf                buf_read;
+    //http_buf                buf_read;
     http_buf                buf_write;
     int                     idle;
     int 		    errcode;
