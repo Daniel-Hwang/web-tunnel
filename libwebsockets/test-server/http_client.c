@@ -445,6 +445,10 @@ void prepare_process(http_mgmt* mgmt)
             release_prepare(mgmt);
         }
         break;
+    case HTTP_C_FORWARD_RESP:
+        if(0 != process_tcp_forwardresp(mgmt)) {
+            release_prepare(mgmt);
+        }
     default:
         release_prepare(mgmt);
         break;
@@ -1558,7 +1562,8 @@ int process_tunnel_resp(http_mgmt* mgmt)
         }
     }
 
-    if(&tcp_server->list_client == &tcp_client->node) {
+    if((NULL == tcp_client)
+            || (&tcp_server->list_client == &tcp_client->node)) {
         /* Not found */
         return -1;
     }
@@ -2055,8 +2060,27 @@ int process_tcp_forward(http_mgmt* mgmt)
     port = htons(port);
 
     /* Now create tcp_forward */
+    tcp_forward_create(mgmt, seq, port);
 
     release_prepare(mgmt);
+    return 0;
+}
+
+int process_tcp_forwardresp(http_mgmt *mgmt) {
+    tcp_forward_context* tcp_forward = NULL;
+    http_buf* pbuf = &mgmt->buf_prepare;
+
+    list_for_each_entry(tcp_forward, &mgmt->list_forward, node) {
+        if(pbuf->seq == tcp_forward->seq) {
+            break;
+        }
+    }
+    if((NULL == tcp_forward)
+            || (&mgmt->list_forward == &tcp_forward->node)) {
+        /* Not found */
+        return -1;
+    }
+
     return 0;
 }
 
@@ -2086,12 +2110,12 @@ int tcp_forward_read(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
             lwsl_info("Tcp client got n=%d, forwarding to websocket server\n", n);
             header.magic = htonl(HTTP_C_MAGIC);
             header.version = HTTP_C_VERSION;
-            header.type = HTTP_C_HAND;
+            header.type = HTTP_C_FORWARD_REQ;
             header.seq = tcp_forward->seq;
             header.length = htonl(n + HTTP_C_HEADER_LEN);
             header.reserved = 0;
             list_add_tail(&buf_info->node, &mgmt->buf_toserver.list_todo);
-            buf_info = NULL;
+            buf_info = NULL;    //Set to null, so it will not be free
             http_mgmt_toserver(mgmt);
         }
         else if((!n) || ((errno != EINTR) && (errno != EAGAIN))) {
