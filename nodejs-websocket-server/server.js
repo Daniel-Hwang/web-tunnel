@@ -227,12 +227,20 @@ var userMgmr = (function () {
     return UserMgmr;
 })();
 
+var parseCookie = express.cookieParser();
+var MemoryStore = express.session.MemoryStore;
+var store = new MemoryStore();
+var sessionHandler = express.session({
+    secret: "session-secret",
+    store: store,
+});
 app.configure(function() {
 //    app.use(express.static(__dirname + "/public"));
 //    app.set('views', __dirname);
 //    app.set('view engine', 'ejs');
-    app.use(express.cookieParser('some secret here'));
-    app.use(express.session({secret: "stringaaa"}));
+    app.use(parseCookie);
+    //app.use(express.session({secret: "stringaaa"}));
+    app.use(sessionHandler);
     app.use(function(req, res, next){
         req.pipe(concat(function(data){
         req.body = data;
@@ -536,16 +544,49 @@ function connectionParse(connection, message) {
 
     parseNormalMessage(connection, message.binaryData);
 }
+function getSidFromCookies(cookies) {
+     var filtered = cookies.filter(function(obj) {
+         return obj.name == 'connect.sid';
+     });
+     return filtered.length > 0 ? filtered[0].value : null;
+}
 
-router.mount('*', 'dumb-increment-protocol', function(request) {
-    // Should do origin verification here. You have to pass the accepted
-    // origin into the accept method of the request.
+function newConnection(request, sess) {
     var connection = request.accept(request.origin);
+
+    if((typeof sess != "undefined") 
+          && (typeof sess.username != "undefined")) {
+          connection.sess_username = sess.username;
+    }
+
     console.log((new Date()) + " dumb-increment-protocol connection accepted from " + connection.remoteAddress +
                 " - Protocol Version " + connection.webSocketVersion + " origin - " + request.origin);
+
+    //TODO wait for handshake, if timeout, delete it.
     connection.on('message', function(message) {
         if (message.type === 'utf8') {
             console.log(message.utf8Data);
+	    if(typeof connection.sess_username == "undefined") {
+		// Check login
+		connection.close();
+	    }
+
+	    //Parse handshake
+	    if(message.utf8Data == 'hello') {
+		var obj = {};
+		obj.seq = 555;
+		connection.sendUTF(JSON.stringify(obj));
+	    } else {
+		var obj = JSON.parse(message.utf8Data);
+		if(obj.msg == 'hello') {
+		    //create a new forward client
+		    ;
+		} else {
+		    //forward to web-tunnel client
+		    ;
+		}
+	    }
+	    
         }
         else {
             connectionParse(this, message);
@@ -556,6 +597,19 @@ router.mount('*', 'dumb-increment-protocol', function(request) {
             userMap.remove(this.user);
         }
     });
+}
+
+router.mount('*', 'dumb-increment-protocol', function(request) {
+    // Should do origin verification here. You have to pass the accepted
+    // origin into the accept method of the request.
+    parseCookie(request.httpRequest, null, function(err) {
+	    var connect_sid = getSidFromCookies(request.cookies);
+	    store.get(connect_sid, function(err, sess) {
+		console.log("The session is " + sess + " connect.sid= " + connect_sid );
+		newConnection(request, sess);
+	    });
+    });
+
 });
 
 app.get("/__list", function(req, res){
@@ -667,6 +721,19 @@ app.get("/__testreq", function(req, res) {
     var bufs = createReq([tmp_buf], 0x5, 0x88);
     conn.sendBytes(bufs);
     res.send("again hello to you\n");
+});
+
+app.get("/__wesocket", function(req, res) {
+    var filePath = path.join(__dirname, 'public/__websocket.html');
+    var stat = fileSystem.statSync(filePath);
+
+    res.writeHead(200, {
+    'Content-Type': 'text/html; charset=UTF-8',
+    'Content-Length': stat.size
+    });
+
+    var readStream = fileSystem.createReadStream(filePath);
+    readStream.pipe(res);
 });
 
 app.all("*", function (req, res) {

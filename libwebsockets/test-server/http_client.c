@@ -53,6 +53,9 @@ int process_tunnel_resp(http_mgmt* mgmt);
 int process_tcp_forward(http_mgmt* mgmt);
 int tcp_forward_create(http_mgmt* mgmt, uint16_t seq, uint16_t port);
 int tcp_forward_release(http_mgmt* mgmt, tcp_forward_context* tcp_forward);
+int tcp_forward_read(http_mgmt* mgmt, tcp_forward_context* tcp_forward);
+int tcp_forward_write(http_mgmt* mgmt, tcp_forward_context* tcp_forward);
+int process_tcp_forwardresp(http_mgmt *mgmt);
 
 extern in_addr_t inet_addr(const char *cp);
 
@@ -734,12 +737,13 @@ int http_mgmt_service(http_mgmt* mgmt, struct pollfd* pfd)
         break;
     case CONTEXT_TYPE_FORWARD:
         tcp_forward = (tcp_forward_context*)common_ctx;
+        caller_status = (*tcp_forward->func_run)(mgmt, tcp_forward);
         if(CALLER_CONTINUE == caller_status) {
             tcp_forward->status = CALLING_READY;
         } else if(CALLER_FINISH == caller_status) {
             tcp_forward_release(mgmt, tcp_forward);
         } else {
-            tcp_client->status = CALLING_PENDING;
+            tcp_forward->status = CALLING_PENDING;
         }
         break;
     default:
@@ -2066,7 +2070,8 @@ int process_tcp_forward(http_mgmt* mgmt)
     return 0;
 }
 
-int process_tcp_forwardresp(http_mgmt *mgmt) {
+int process_tcp_forwardresp(http_mgmt *mgmt)
+{
     tcp_forward_context* tcp_forward = NULL;
     http_buf* pbuf = &mgmt->buf_prepare;
 
@@ -2081,7 +2086,71 @@ int process_tcp_forwardresp(http_mgmt *mgmt) {
         return -1;
     }
 
+    list_splice_tail_init(&pbuf->list_todo, &tcp_forward->buf_write.list_todo);
+    release_prepare(mgmt);  //Reset the buf_prepare
+
+    if(tcp_forward->idle) {
+        //Change to write state
+        tcp_forward->func_run = &tcp_forward_write;
+        tcp_forward->pfd->events |= POLLOUT;
+        tcp_forward->pfd->events &= ~POLLIN;
+        memset(&tcp_forward->context, 0, sizeof(tcp_forward->context));
+    }
+
     return 0;
+}
+
+int tcp_forward_write(http_mgmt* mgmt, tcp_forward_context* tcp_forward) 
+{
+    int n = 0;
+    http_buf_info* buf_info = tcp_forward->buf_write.curr;
+    struct pollfd* pfd = tcp_forward->pfd;
+
+    /* Set to busy */
+    tcp_forward->idle = 0;
+
+    lwsl_info("tcp_forward_write\n");
+
+    ccrBegin(tcp_forward);
+
+    /* Only run once */
+    tcp_forward->buf_write.curr = next_buf_info(&tcp_forward->buf_write.list_todo);
+    buf_info = tcp_forward->buf_write.curr;
+
+
+    while(buf_info != NULL)
+    {
+        n = write(tcp_forward->fwd_fd, buf_info->buf + buf_info->start, buf_info->len);
+
+        if(n < 0) {
+            if(errno == EINTR || errno == EAGAIN) {
+                ccrReturn(tcp_forward, CALLER_PENDING);
+            }
+            else {
+                lwsl_warn("tcp forward write sock error\n");
+                ccrReturn(tcp_forward, CALLER_FINISH);
+            }
+        }
+
+        if((buf_info->len -= n) > 0) {
+            buf_info->start += n;
+            ccrReturn(tcp_forward, CALLER_PENDING);
+        } else {
+            /* Finished write */
+            list_del(&buf_info->node);
+            free_buf(mgmt, buf_info);
+            tcp_forward->buf_write.curr = next_buf_info(&tcp_forward->buf_write.list_todo);
+            buf_info = tcp_forward->buf_write.curr;
+        }
+    }
+
+    /* Write complete, switch to idle and wait for read */
+    pfd->events &= ~POLLOUT;
+    pfd->events |= POLLIN;
+    tcp_forward->func_run = &tcp_forward_read;
+    memset(&tcp_forward->context, 0, sizeof(tcp_forward->context));
+    tcp_forward->idle = 1;
+    ccrFinish(tcp_forward, CALLER_PENDING);
 }
 
 // read and forward to websocket
@@ -2094,7 +2163,7 @@ int tcp_forward_read(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
 
     /* Set to busy first */
     tcp_forward->idle = 0;
-    lwsl_info("tcp_client_read\n");
+    lwsl_info("tcp_forward_read\n");
 
     do {
         buf_info = alloc_buf(mgmt);
@@ -2108,15 +2177,23 @@ int tcp_forward_read(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
         n = read(tcp_forward->fwd_fd, buf_info->buf + HTTP_C_HEADER_LEN, left);
         if(n > 0) {
             lwsl_info("Tcp client got n=%d, forwarding to websocket server\n", n);
-            header.magic = htonl(HTTP_C_MAGIC);
-            header.version = HTTP_C_VERSION;
-            header.type = HTTP_C_FORWARD_REQ;
-            header.seq = tcp_forward->seq;
-            header.length = htonl(n + HTTP_C_HEADER_LEN);
-            header.reserved = 0;
+            header->magic = htonl(HTTP_C_MAGIC);
+            header->version = HTTP_C_VERSION;
+            header->type = HTTP_C_FORWARD_REQ;
+            header->seq = tcp_forward->seq;
+            header->length = htonl(n + HTTP_C_HEADER_LEN);
+            header->reserved = 0;
             list_add_tail(&buf_info->node, &mgmt->buf_toserver.list_todo);
             buf_info = NULL;    //Set to null, so it will not be free
             http_mgmt_toserver(mgmt);
+
+            //check if we need to change to write state
+            if(!list_empty(&tcp_forward->buf_write.list_todo)) {
+                tcp_forward->func_run = &tcp_forward_write;
+                tcp_forward->pfd->events |= POLLOUT;
+                tcp_forward->pfd->events &= ~POLLIN;
+                memset(&tcp_forward->context, 0, sizeof(tcp_forward->context));
+            }
         }
         else if((!n) || ((errno != EINTR) && (errno != EAGAIN))) {
             // Read finished
@@ -2130,6 +2207,7 @@ int tcp_forward_read(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
     }
 
     tcp_forward->idle = 1;
+
     return status;
 }
 
@@ -2149,7 +2227,7 @@ int tcp_forward_connect(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
         server_addr.sin_family = AF_INET;
         server_addr.sin_port = htons(tcp_forward->port);
         server_addr.sin_addr.s_addr = name_resolve(mgmt->local_host);
-        lwsl_notice("tcp_forward before connect ctx->seq=%d\n", tcp_foward->seq);
+        lwsl_notice("tcp_forward before connect ctx->seq=%d\n", tcp_forward->seq);
         rc = connect(tcp_forward->fwd_fd, (struct sockaddr*) &server_addr, sizeof(struct sockaddr));
         if(rc >= 0)
         {
@@ -2176,14 +2254,14 @@ int tcp_forward_connect(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
     pfd->events &= ~POLLOUT;
     pfd->events |= POLLIN;
     tcp_forward->func_run = &tcp_forward_read;
-    memset(&tcp_client->context, 0, sizeof(tcp_client->context));
-    tcp_client->idle = 1;
-    ccrFinish(tcp_client, CALLER_PENDING);
+    memset(&tcp_forward->context, 0, sizeof(tcp_forward->context));
+    tcp_forward->idle = 1;
+    ccrFinish(tcp_forward, CALLER_PENDING);
 }
 
 int tcp_forward_create(http_mgmt* mgmt, uint16_t seq, uint16_t port)
 {
-    int sockfd, rc = 0;
+    int sockfd, rc = 0, optval = 0;
     tcp_forward_context* tcp_forward;
     tcp_forward = calloc(1, sizeof(tcp_forward_context));
     if(NULL == tcp_forward) {
@@ -2203,15 +2281,15 @@ int tcp_forward_create(http_mgmt* mgmt, uint16_t seq, uint16_t port)
         tcp_forward->seq = seq;
         tcp_forward->port = port;
 
-        tcp_forward->fwd_fd = sockfd;
-        setsockopt(ctx->sockfd, SOL_TCP, TCP_NODELAY, (const void *)&optval, sizeof(optval));
+        setsockopt(sockfd, SOL_TCP, TCP_NODELAY, (const void *)&optval, sizeof(optval));
         fcntl(sockfd, F_SETFL, O_NONBLOCK);
+        tcp_forward->fwd_fd = sockfd;
 
         tcp_forward->idle = 1;
         //INIT_LIST_HEAD(&tcp_forward->buf_read.list_todo);
         INIT_LIST_HEAD(&tcp_forward->buf_write.list_todo);
         tcp_forward->pfd = mgmt_add_fd(mgmt, sockfd, (POLLIN | POLLERR | POLLHUP) );
-        mgmt->http_lookup[ctx->sockfd] = (common_context*)ctx;
+        mgmt->http_lookup[tcp_forward->fwd_fd] = (common_context*)tcp_forward;
 
         tcp_forward->func_run = &tcp_forward_connect;
         tcp_forward->status = CALLING_READY;

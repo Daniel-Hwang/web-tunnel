@@ -186,6 +186,7 @@ typedef struct _tcp_forward_context {
     //http_buf                buf_read;
     http_buf                buf_write;
     int                     idle;
+    //int 		    is_writing;
     int 		    errcode;
 
     struct pollfd*          pfd;

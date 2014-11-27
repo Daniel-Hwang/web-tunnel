@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+ <meta charset=utf-8 />
+ <title>Minimal Websocket test app</title>
+ <script src="/__jquery-latest.min.js" type="text/javascript"></script>
+</head>
+
+<body>
+<h2>libwebsockets "dumb-increment-protocol" test applet</h2>
+<div id="pannel"></div>
+
+<script>
+function get_appropriate_ws_url()
+{
+	var pcol;
+	var u = document.URL;
+
+	/*
+	 * We open the websocket encrypted if this page came on an
+	 * https:// url itself, otherwise unencrypted
+	 */
+
+	if (u.substring(0, 5) == "https") {
+		pcol = "wss://";
+		u = u.substr(8);
+	} else {
+		pcol = "ws://";
+		if (u.substring(0, 4) == "http")
+			u = u.substr(7);
+	}
+
+	u = u.split('/');
+
+	return pcol + u[0];
+}
+var ws_ctor = window['MozWebSocket'] ? window['MozWebSocket'] : window['WebSocket'];
+var socket_di = new ws_ctor(get_appropriate_ws_url(),
+			   "dumb-increment-protocol");  
+try {
+	socket_di.onopen = function() {
+		$("#pannel").html("opening");
+		socket_di.send("hello");
+	} 
+
+	socket_di.onmessage = function got_packet(msg) {
+		$("#pannel").html(" got " + msg.data);
+	} 
+
+	socket_di.onclose = function(){
+		$("#pannel").html("closed ");
+	}
+} catch(exception) {
+	$("#pannel").html(" got " + exception);
+}
+
+function reset() {
+	socket_di.send("reset\n");
+}
+
+function closeIncrementConnection() {
+  socket_di.close();
+}
+
+</script>
