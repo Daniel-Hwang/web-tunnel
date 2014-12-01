@@ -1,14 +1,39 @@
 var WebSocketServer = require('websocket').server;
 var WebSocketRouter = require('websocket').router;
 var express = require('express');
+//var session = require('express-session')
 var request = require('request');
 var concat = require('concat-stream');
 var HashMap = require('hashmap').HashMap;
 var buffertools = require('buffertools');
+var stream = require("stream");
+var Streamifier = require('streamifier');
+var fileSystem = require('fs');
+var path = require('path');
+var querystring = require("querystring");
 
-var app = express.createServer();
+var cfg = {
+    ssl: false,
+    port: 8060,
+    ssl_key: '/home/janson/projects/nodejs/ws/examples/tmp/privatekey.pem',
+    ssl_cert: '/home/janson/projects/nodejs/ws/examples/tmp/certificate.pem'
+};
+
+var http = null;
+var app = null;
+if(cfg.ssl) {
+    http = require("https");
+    app = express.createServer({
+        key: fileSystem.readFileSync( cfg.ssl_key ),
+        cert: fileSystem.readFileSync( cfg.ssl_cert )
+    });
+} else {
+    http = require("http");
+    app = express.createServer();
+}
+
 var userMap = new HashMap();
-var userMgrMax = 16;
+var userMgrMax = 256;
 var protocolHeaderLen = 16;
 
 var httpProcessor = (function () {
@@ -20,73 +45,24 @@ var httpProcessor = (function () {
         this.headerStr = "";
         this.start = 0;
         this.isChunked = false;
+        this.chunk_str = "";
     }
     HttpProcessor.prototype = {
         constructor:HttpProcessor,
         innerProcessBuffer: function(mgr, buffer) {
-            var lrln = "\r\n";
-            if(this.isChunked) {
-                if(!this.chunkIsStart) {
-                    var offset = buffertools.indexOf(buffer, lrln);
-                    if(offset <= 0) {
-                        console.log("offset error hear");
-                        return;
-                    }
-                    var buf2 = new Buffer(offset);
-                    buffer.copy(buf2, 0, 0, offset);
-                    this.chunkSize = parseInt(buf2.toString(), 16);
-                    this.chunkIsStart = true;
-                    this.chunkStart = 0;
-                    var len = buffer.length-offset-lrln.length;
-                    if(len > 0) {
-                        buf2 = new Buffer(len);
-                        buffer.copy(buf2, 0, offset+lrln.length, buffer.length);
-                        this.innerProcessBuffer(mgr, buf2);
-                    }
-                }
-                else {
-                    var stillHas = this.chunkSize - this.chunkStart;
-                    if(buffer.length < stillHas) {
-                        console.log("just write directly");
-                        this.res.write(buffer);       //Just write directly
-                        this.chunkStart += buffer.length;
-                    }
-                    else if(buffer.length == stillHas){
-                        console.log("equal hear");
-                        this.res.write(buffer);
-                        this.chunkIsStart = false;
-                        this.chunkSize = 0;
-                        this.chunkStart = 0;
-                    }
-                    else {
-                        var left = buffer.length-stillHas;
-                        var buf2 = new Buffer(stillHas);
-                        buffer.copy(buf2, 0, 0, stillHas);
-                        this.res.write(buf2);
-                        this.chunkIsStart = false;
-                        this.chunkSize = 0;
-                        this.chunkStart = 0;
-
-                        buf2 = new Buffer(left);
-                        buffer.copy(buf2, 0, stillHas, buffer.length);
-                        this.innerProcessBuffer(mgr, buf2);
-                    }
-                }
-            }
-            else {
-                // Not chunk hear
-                this.res.write(buffer);
-            }
+            //console.log(buffer.toString());
+            //console.log("inner buffer len= " + buffer.length);
+            this.res.write(buffer);
         },
         processBuffer: function(mgr, buffer) {
-            console.log("processBuffer");
+            //console.log("processBuffer");
             this.start += buffer.length;
 
             if(!this.headerOk) {
                 this.processHeader(mgr, buffer);
             }
             else {
-                console.log("write response");
+                //console.log("write response");
                 this.innerProcessBuffer(mgr, buffer);
             }
 
@@ -94,19 +70,24 @@ var httpProcessor = (function () {
                 this.res.end();
                 mgr.delSeq(mgr.curr_seq);
                 mgr.curr_seq = null;
+                mgr.tmp_bufs = [];
+                mgr.tmp_bufs_len = 0;
                 mgr.curr_total = 0;
             }
         },
         processHeader: function(mgr, buffer) {
             var endstr = "\r\n\r\n";
-            var i = buffertools.indexOf(buffer, endstr);
+            var oldLen = Buffer.byteLength(this.headerStr);
+            this.headerStr += buffer.toString();
+            var i = this.headerStr.indexOf(endstr);
             var offset = 0;
+
             if(i < 0) {
-                this.headerStr += buffer.toString();
                 return -1;
+            } else {
+                this.headerStr = this.headerStr.substring(0, i+endstr.length);
+                offset = Buffer.byteLength(this.headerStr) - oldLen;
             }
-            this.headerStr += buffer.toString("utf8", 0, i+endstr.length);
-            offset = i + endstr.length;
 
             //Parse header now
             var arr = this.headerStr.split("\r\n");
@@ -121,7 +102,7 @@ var httpProcessor = (function () {
                 console.log("parse header error, not matched");
                 return -2;
             }
-            console.log(match);
+            //console.log(match);
 
             var header = {"status":0, "body":{}};
             var transfer_key = "transfer-encoding";
@@ -134,25 +115,31 @@ var httpProcessor = (function () {
                     continue;
                 }
                 var sstrip = ss[0].replace(/^\s+|\s+$/g, "").toLowerCase();
+                var ss1trip = ss[1].replace(/^\s+|\s+$/g, "").toLowerCase();
                 if(sstrip == connecStr) {
                     continue;
                 }
                 if((sstrip == transfer_key)
-                   && (ss[1].replace(/^\s+|\s+$/g, "").toLowerCase() == transfer_value)) {
-                    this.isChunked = true;
-                    this.chunkSize = 0;
-                    this.chunkIsStart = false;
+                   && (ss1trip == transfer_value)) {
+                    //this.isChunked = true;
+                    //this.chunkSize = 0;
+                    //this.chunkIsStart = false;
                 }
-                header.body[ss[0]] = ss[1].replace(/^\s+|\s+$/g, "");
+                header.body[sstrip] = ss1trip;
             }
 
+            /* if(typeof header.body.referer != "undefined") {
+                var n = header.body.referer.lastIndexOf(":");
+                header.body.referer = "http://127.0.0.1:8060" + header.body.referer.substring(n+3);
+            } */
             this.headerOk = true;
             this.res.writeHead(header.status, header.body);
-            console.log(header);
+            //console.log(header);
 
             if((buffer.length-offset) > 0) {
-                var buf2 = new Buffer(buffer.length-offset);
-                buffer.copy(buf2, 0, offset, buffer.length);
+                //var buf2 = new Buffer(buffer.length-offset);
+                //buffer.copy(buf2, 0, offset, buffer.length);
+                var buf2 = buffer.slice(offset, buffer.length);
                 this.innerProcessBuffer(mgr, buf2);
             }
             return 0;
@@ -240,10 +227,20 @@ var userMgmr = (function () {
     return UserMgmr;
 })();
 
+var parseCookie = express.cookieParser();
+var MemoryStore = express.session.MemoryStore;
+var store = new MemoryStore();
+var sessionHandler = express.session({
+    secret: "session-secret",
+    store: store,
+});
 app.configure(function() {
-    app.use(express.static(__dirname + "/public"));
-    app.set('views', __dirname);
-    app.set('view engine', 'ejs');
+//    app.use(express.static(__dirname + "/public"));
+//    app.set('views', __dirname);
+//    app.set('view engine', 'ejs');
+    app.use(parseCookie);
+    //app.use(express.session({secret: "stringaaa"}));
+    app.use(sessionHandler);
     app.use(function(req, res, next){
         req.pipe(concat(function(data){
         req.body = data;
@@ -251,36 +248,8 @@ app.configure(function() {
         }));
     });
 });
-app.get('/sample', function(req, res) {
-    var header = {}
-    for(var p in req.headers) {
-    header[p] = req.headers[p];
-    }
-    header.host = '192.168.1.28';
 
-    var objStr = JSON.stringify(header);
-    console.log(objStr);
-    console.log(req.body);
-
-    var s = "GET /eh/w/index HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nConnection: Close\r\nAccept: text/html, image/jpeg, application/x-ms-application, */*\r\n\r\n";
-    var mgr = userMap.get("janson");
-    if((typeof mgr != "undefined")
-       && (null != mgr) ) {
-           var conn = mgr.getConn();
-           var processor = mgr.newSeq(req, res);
-           console.log("new seq=" + processor.seq);
-           conn.sendBytes(createReq(s, processor.seq));
-    }
-});
-
-app.get('/binary', function(req, res) {
-    var s = "GET /eh/w/index HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nConnection: Close\r\nAccept: text/html, image/jpeg, application/x-ms-application, */*\r\n\r\n";
-    var buffer = createReq(s, 0);
-    console.log(buffer.toString());
-    res.send("hahah");
-});
-
-app.get('/testseq', function(req, res) {
+app.get('/_testseq', function(req, res) {
     var a = new userMgmr();
     for(var i = 0; i < 10; i++) {
         console.log(a.newSeq("a"+i,"b"+i));
@@ -301,10 +270,62 @@ app.get('/testseq', function(req, res) {
     res.send("oooo");
 });
 
-app.get('/', function(req, res) {
-    res.render('index', { layout: false });
+app.get("/_teststream", function(req, res) {
+    var buf = new Buffer("ahahahaha");
+    var readStream = Streamifier.createReadStream(buf);
+    readStream.pipe(res);
 });
-app.listen(8060, '0.0.0.0');
+
+//app.all("/__login
+app.get("/__login", function(req, res) {
+    var filePath = path.join(__dirname, 'public/__login.html');
+    var stat = fileSystem.statSync(filePath);
+
+    res.writeHead(200, {
+    'Content-Type': 'text/html; charset=UTF-8',
+    'Content-Length': stat.size
+    });
+
+    var readStream = fileSystem.createReadStream(filePath);
+    // We replaced all the event handlers with a simple call to readStream.pipe()
+    readStream.pipe(res);
+});
+app.post("/__login", function(req, res) {
+    var query = req.body.toString();
+    var postObj = querystring.parse(query);
+    var username = postObj.username;
+
+    if(username == "") {
+        res.send("Have to set the username !");
+    return;
+    }
+
+    var mgr = userMap.get(username);
+    if((typeof mgr == "undefined")
+       || (null == mgr) ) {
+            res.send("The device of username = " + username + " is not found !");
+        return;
+       }
+
+    var sess = req.session;
+    sess.username = username;
+    res.redirect('/');
+});
+app.get("/__logout", function(req, res) {
+    username = "";
+    if(typeof req.session.username != "undefined") {
+    username = req.session.username;
+        delete req.session.username;
+    }
+    res.send(username + " Logout!<br/><a href='/__login'>Login IN? </a>");
+});
+
+app.get("/__sessiontest", function(req, res) {
+    var sess = req.session;
+    res.send(sess.username + "\n");
+});
+
+app.listen(cfg.port, '0.0.0.0');
 
 var wsServer = new WebSocketServer({
     httpServer: app,
@@ -355,41 +376,58 @@ wsServer.on('request', function(request) {
 });
 */
 
-function createReq(s, seq) {
-    var total_len = Buffer.byteLength(s) + 16;
-
-    var buffer = new Buffer(total_len);
-    buffer.writeUInt32BE(0x10293874, 0);   //Magic     0~4
-    buffer.writeUInt16BE(0x0001, 4);       //version   4~6
-    buffer.writeUInt16BE(0x0001, 6);       //request   6~8
-    buffer.writeUInt16BE(total_len, 8);    //length    8~10
-    buffer.writeUInt16BE(seq, 10);       //checksum  10~12
-    buffer.writeUInt32BE(0x00000000, 12);   //Reserve   12~16
-    buffer.write(s, 16);
-
-    return buffer;
-}
-
-function createReqBuffer(buf, t, seq) {
-    var total_len = buf.length + 16;
+function createReq(bufs, type, seq) {
+    var total_len = 16;
 
     var buffer = new Buffer(16);
+    var bufs2 = [buffer];
+
+    for(var i = 0; i < bufs.length; i++) {
+        total_len += bufs[i].length;
+        bufs2.push(bufs[i]);
+    }
+
     buffer.writeUInt32BE(0x10293874, 0);   //Magic     0~4
-    buffer.writeUInt16BE(0x0001, 4);       //version   4~6
-    buffer.writeUInt16BE(t, 6);             //request   6~8
-    buffer.writeUInt16BE(total_len, 8);    //length    8~10
-    buffer.writeUInt16BE(seq, 10);          //seq        10~12
+    buffer.writeUInt8(0x01, 4);       //version   4~5
+    buffer.writeUInt8(type, 5);             //request   5~6
+    buffer.writeUInt16BE(seq, 6);          //seq        6~8
+    buffer.writeUInt32BE(total_len, 8);    //length    8~12
     buffer.writeUInt32BE(0x00000000, 12);   //Reserve   12~16
 
-    return Buffer.concat([buffer, buf], total_len);
+    console.log("createReq the total len is " + total_len);
+
+    return Buffer.concat(bufs2, total_len);
+}
+
+function createReq2(bufs, type, seq) {
+    var total_len = 16;
+
+    var buffer = new Buffer(16);
+    var bufs2 = [buffer];
+
+    for(var i = 0; i < bufs.length; i++) {
+        total_len += bufs[i].length;
+        bufs2.push(bufs[i]);
+    }
+
+    buffer.writeUInt32BE(0x10293874, 0);   //Magic     0~4
+    buffer.writeUInt8(0x01, 4);       //version   4~5
+    buffer.writeUInt8(type, 5);             //request   5~6
+    buffer.writeUInt16BE(seq, 6);          //seq        6~8
+    buffer.writeUInt32BE(total_len, 8);    //length    8~12
+    buffer.writeUInt32BE(0x00000000, 12);   //Reserve   12~16
+
+    console.log("createReq the total len is " + total_len);
+
+    return bufs2;
 }
 
 function httpNormalParse(mgr, buf) {
     var processor = mgr.getBySeq(mgr.curr_seq);
-    console.log("parse normal message");
+    //console.log("parse normal message");
     if(null == processor) {
         mgr.curr_seq = null;
-        mgr.buffers = [];
+        mgr.curr_total = 0;
         console.log("parse normal message, but the seq is error");
         return;
     }
@@ -397,34 +435,69 @@ function httpNormalParse(mgr, buf) {
     processor.processBuffer(mgr, buf);
 }
 
-function parseNormalMessage(conn, message) {
-    var buffer = message.binaryData;
+function parseNormalMessage(conn, buffer) {
     var mgr = userMap.get(conn.user);
 
-    console.log("parseNormalMessage");
+    //console.log("parseNormalMessage");
     if(null == mgr.curr_seq) {
         console.log("parse the first message");
         if(buffer.length < protocolHeaderLen) {
-            console.log("the buffer is too smaller");
+            console.log("the buffer is too smaller " + buffer.length);
+            mgr.tmp_bufs.push(buffer);
+            mgr.tmp_bufs_len += buffer.length;
+            if(mgr.tmp_bufs_len >= protocolHeaderLen) {
+                var new_buf = Buffer.concat(mgr.tmp_bufs);
+                parseNormalMessage(conn, new_buf);
+            }
             return;
+        } else {
+            mgr.tmp_bufs = [];
+            mgr.tmp_bufs_len = 0;
         }
 
         // Wait for first message
         var magic = buffer.readUInt32BE(0);
-        var ver = buffer.readUInt16BE(4);
-        var t = buffer.readUInt16BE(6)
+        var ver = buffer.readUInt8(4);
+        var t = buffer.readUInt8(5);
         if((magic != 0x10293874)
-           || (ver != 0x1)
-           || (t != 0x2)) {
-               console.log("get first message error");
+           || (ver != 0x1)) {
+               console.log("get first message error " + magic + " ver " + ver + " type " + t);
             return;
         }
-        mgr.curr_total = buffer.readUInt16BE(8);
-        mgr.curr_seq = buffer.readUInt16BE(10);
+
+	if(t == 0x5) {
+		var tmpseq = buffer.readUInt16BE(6);
+		var auth = buffer.readUInt32BE(16);
+		console.log("seq " + tmpseq + " " + auth);
+
+    		var filePath = path.join(__dirname, 'config.json');
+    		var readStream = fileSystem.createReadStream(filePath);
+		var filestr = "";
+		readStream.on('data', function(data) {
+			filestr += data;
+		});
+		readStream.on('end', function() {
+			console.log("config.json " + filestr);
+			var tmp_len = Buffer.byteLength(filestr) + 4;
+			var tmp_buf = new Buffer(tmp_len);
+			tmp_buf.writeUInt32BE(tmp_len, 0);
+			tmp_buf.write(filestr, 4);
+			var buf2 = createReq([tmp_buf], 0x6, tmpseq);
+			conn.sendBytes(buf2);
+		});
+
+		return;
+	}
+
+        mgr.curr_seq = buffer.readUInt16BE(6);
+        mgr.curr_total = buffer.readUInt32BE(8);
+        console.log("get curr_seq = " + mgr.curr_seq + "total len = " + mgr.curr_total);
+        mgr.curr_total -=  protocolHeaderLen; //exclude the header length
 
         if(buffer.length > protocolHeaderLen) {
-            var buf2 = new Buffer(buffer.length-protocolHeaderLen);
-            buffer.copy(buf2, 0, protocolHeaderLen, buffer.length);
+            //var buf2 = new Buffer(buffer.length-protocolHeaderLen);
+            //buffer.copy(buf2, 0, protocolHeaderLen, buffer.length);
+            var buf2 = buffer.slice(protocolHeaderLen, buffer.length);
             console.log("the first message still have some buffers");
             httpNormalParse(mgr, buf2);
         }
@@ -439,21 +512,29 @@ function connectionParse(connection, message) {
 
     if(typeof connection.user == "undefined") {
         var magic = buffer.readUInt32BE(0);
-        var ver = buffer.readUInt16BE(4);
-        var t = buffer.readUInt16BE(6)
+        var ver = buffer.readUInt8(4);
+        var t = buffer.readUInt8(5);
         if((magic != 0x10293874)
            || (ver != 0x1)
            || (t != 0x3)) {
-               console.log("parse handshake message error");
+               console.log("parse handshake message error " + magic + " " + ver + " " + t);
             return;
         }
 
         var o = JSON.parse(buffer.toString("utf8", 16));
         connection.user = o.username;
+        connection.host = o.host;
+        connection.port = o.port;
+        console.log("get username= " + o.username + " host " + o.host + " port " + o.port);
+
+	/* if(o.username == 'janson') {
+		connection.close();
+		return;
+	} */
 
         var buf = new Buffer(4);
         buf.writeUInt32BE(0x1234, 0);
-        connection.sendBytes(createReqBuffer(buf, 0x3, 0x0));
+        connection.sendBytes(createReq([buf], 0x3, 0x0));
 
         var mgr = new userMgmr(connection);
         userMap.set(connection.user, mgr);
@@ -461,18 +542,51 @@ function connectionParse(connection, message) {
         return;
     }
 
-    parseNormalMessage(connection, message);
+    parseNormalMessage(connection, message.binaryData);
+}
+function getSidFromCookies(cookies) {
+     var filtered = cookies.filter(function(obj) {
+         return obj.name == 'connect.sid';
+     });
+     return filtered.length > 0 ? filtered[0].value : null;
 }
 
-router.mount('*', 'dumb-increment-protocol', function(request) {
-    // Should do origin verification here. You have to pass the accepted
-    // origin into the accept method of the request.
+function newConnection(request, sess) {
     var connection = request.accept(request.origin);
+
+    if((typeof sess != "undefined") 
+          && (typeof sess.username != "undefined")) {
+          connection.sess_username = sess.username;
+    }
+
     console.log((new Date()) + " dumb-increment-protocol connection accepted from " + connection.remoteAddress +
-                " - Protocol Version " + connection.webSocketVersion);
+                " - Protocol Version " + connection.webSocketVersion + " origin - " + request.origin);
+
+    //TODO wait for handshake, if timeout, delete it.
     connection.on('message', function(message) {
         if (message.type === 'utf8') {
             console.log(message.utf8Data);
+	    if(typeof connection.sess_username == "undefined") {
+		// Check login
+		connection.close();
+	    }
+
+	    //Parse handshake
+	    if(message.utf8Data == 'hello') {
+		var obj = {};
+		obj.seq = 555;
+		connection.sendUTF(JSON.stringify(obj));
+	    } else {
+		var obj = JSON.parse(message.utf8Data);
+		if(obj.msg == 'hello') {
+		    //create a new forward client
+		    ;
+		} else {
+		    //forward to web-tunnel client
+		    ;
+		}
+	    }
+	    
         }
         else {
             connectionParse(this, message);
@@ -483,4 +597,204 @@ router.mount('*', 'dumb-increment-protocol', function(request) {
             userMap.remove(this.user);
         }
     });
+}
+
+router.mount('*', 'dumb-increment-protocol', function(request) {
+    // Should do origin verification here. You have to pass the accepted
+    // origin into the accept method of the request.
+    parseCookie(request.httpRequest, null, function(err) {
+	    var connect_sid = getSidFromCookies(request.cookies);
+	    store.get(connect_sid, function(err, sess) {
+		console.log("The session is " + sess + " connect.sid= " + connect_sid );
+		newConnection(request, sess);
+	    });
+    });
+
+});
+
+app.get("/__list", function(req, res){
+    var sess = req.session;
+    var obj = {};
+
+    obj.device = "";
+    if(typeof sess.username != "undefined") {
+        obj.device = sess.username;
+    }
+
+    var keys = [];
+    userMap.forEach(function(value, key) {
+        keys.push(key);
+    });
+
+    obj.keys = keys;
+
+    res.writeHead(200, {
+    "Content-Type" : "application/json"
+    });
+    res.end(JSON.stringify(obj));
+});
+
+app.get("/__iframe", function(req, res) {
+    var sess = req.session;
+    if(typeof sess.username == "undefined") {
+        res.redirect('/__devices');
+        return;
+    }
+    var username = sess.username;
+    var mgr = userMap.get(username);
+    if((typeof mgr == "undefined")
+       || (null == mgr) ) {
+        delete sess.username;
+        res.redirect('/__devices');
+        return;
+    }
+
+    var filePath = path.join(__dirname, 'public/__iframe.html');
+    var stat = fileSystem.statSync(filePath);
+
+    res.writeHead(200, {
+    'Content-Type': 'text/html; charset=UTF-8',
+    'Content-Length': stat.size
+    });
+
+    var readStream = fileSystem.createReadStream(filePath);
+    readStream.pipe(res);
+});
+
+app.get("/__devices", function(req, res) {
+    var filePath = path.join(__dirname, 'public/__devices.html');
+    var stat = fileSystem.statSync(filePath);
+
+    res.writeHead(200, {
+    'Content-Type': 'text/html; charset=UTF-8',
+    'Content-Length': stat.size
+    });
+
+    var readStream = fileSystem.createReadStream(filePath);
+    readStream.pipe(res);
+});
+
+app.get("/__device/*", function(req, res) {
+    var username = req.url.substring('/__device/'.length);
+
+    if(username == "") {
+        res.send("Not device name!");
+        return;
+    }
+
+    var mgr = userMap.get(username);
+    if((typeof mgr == "undefined")
+       || (null == mgr) ) {
+            res.send("The device of name = " + username + " is not found !");
+        return;
+       }
+
+    var sess = req.session;
+    sess.username = username;
+    res.redirect('/__iframe');
+});
+
+app.get("/__jquery-latest.min.js", function(req, res){
+    var filePath = path.join(__dirname, 'public/jquery-latest.min.js');
+    var stat = fileSystem.statSync(filePath);
+
+    res.writeHead(200, {
+    'Content-Type': 'text/html; charset=UTF-8',
+    'Content-Length': stat.size
+    });
+
+    var readStream = fileSystem.createReadStream(filePath);
+    readStream.pipe(res);
+});
+
+app.get("/__testreq", function(req, res) {
+    username = "janson";
+    var mgr = userMap.get(username);
+    if((typeof mgr == "undefined")
+       || (null == mgr) ) {
+        return;
+    }
+
+    var conn = mgr.getConn();
+    var tmp_buf = new Buffer(4);
+    tmp_buf.writeUInt32BE(0x88999988, 0);
+    var bufs = createReq([tmp_buf], 0x5, 0x88);
+    conn.sendBytes(bufs);
+    res.send("again hello to you\n");
+});
+
+app.get("/__wesocket", function(req, res) {
+    var filePath = path.join(__dirname, 'public/__websocket.html');
+    var stat = fileSystem.statSync(filePath);
+
+    res.writeHead(200, {
+    'Content-Type': 'text/html; charset=UTF-8',
+    'Content-Length': stat.size
+    });
+
+    var readStream = fileSystem.createReadStream(filePath);
+    readStream.pipe(res);
+});
+
+app.all("*", function (req, res) {
+    //console.log(req.session);
+    var sess = req.session;
+    if(typeof sess.username == "undefined") {
+    res.redirect('/__devices');
+    return;
+    }
+    var username = sess.username;
+    var mgr = userMap.get(username);
+    if((typeof mgr == "undefined")
+       || (null == mgr) ) {
+           delete sess.username;
+        res.redirect('/__devices');
+        return;
+    }
+
+    var conn = mgr.getConn();
+
+    var ignores = ["accept-encoding", "connection"];
+
+    var header = {}
+    for(var p in req.headers) {
+        if(ignores.indexOf(p.toLowerCase()) >= 0) {
+            continue;
+        }
+        header[p.toLowerCase()] = req.headers[p];
+    }
+    if(conn.port == 80) {
+        header.host = conn.host;
+    } else {
+    header.host = conn.host+":"+conn.port;
+    }
+    if(typeof header.referer != "undefined") {
+    var tmp = "http://";
+        var n = header.referer.indexOf(":", tmp.length);
+    var n2 = header.referer.indexOf("/", n+1);
+        header.referer = tmp + conn.host + header.referer.substring(n2);
+    }
+
+    var strHeader = req.method + " " + req.url + " HTTP/1.1\r\n";
+    for(var p in header) {
+        strHeader += p + ": " + header[p] + "\r\n";
+    }
+    strHeader += "connection: close\r\n\r\n";
+    console.log("header is\n" + strHeader);
+
+    var b1 = new Buffer(strHeader);
+    var bufs = [b1];
+    console.log(strHeader);
+    if("POST" == req.method.toUpperCase()) {
+        bufs.push(req.body);
+        console.log(req.body.toString());
+    }
+
+   var processor = mgr.newSeq(req, res);
+   console.log("new seq=" + processor.seq);
+
+   var bufs2 = createReq2(bufs, 1, processor.seq);
+   for(var i = 0; i < bufs2.length; i++) {
+    conn.sendBytes(bufs2[i]);
+   }
 });

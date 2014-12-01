@@ -33,9 +33,10 @@ if(cfg.ssl) {
 }
 
 var userMap = new HashMap();
-var userMgrMax = 256;
+var userMgrMax = 512;
 var protocolHeaderLen = 16;
 
+//负责处理Web请求
 var httpProcessor = (function () {
     function HttpProcessor(req, res, seq) {
         this.req = req;
@@ -44,25 +45,26 @@ var httpProcessor = (function () {
         this.headerOk = false;
         this.headerStr = "";
         this.start = 0;
-        this.isChunked = false;
-        this.chunk_str = "";
+        this.jsInsert = false;
+        this.jsStr = "";
     }
     HttpProcessor.prototype = {
         constructor:HttpProcessor,
         innerProcessBuffer: function(mgr, buffer) {
-            //console.log(buffer.toString());
-            //console.log("inner buffer len= " + buffer.length);
-            this.res.write(buffer);
+            if((!this.jsInsert) && (this.req.url == '/')) {
+                this.toInsertJs(mgr, buffer);
+            } 
+            else {
+                this.res.write(buffer);
+            }
         },
         processBuffer: function(mgr, buffer) {
-            //console.log("processBuffer");
             this.start += buffer.length;
 
             if(!this.headerOk) {
                 this.processHeader(mgr, buffer);
             }
             else {
-                //console.log("write response");
                 this.innerProcessBuffer(mgr, buffer);
             }
 
@@ -70,9 +72,9 @@ var httpProcessor = (function () {
                 this.res.end();
                 mgr.delSeq(mgr.curr_seq);
                 mgr.curr_seq = null;
+                mgr.curr_total = 0;
                 mgr.tmp_bufs = [];
                 mgr.tmp_bufs_len = 0;
-                mgr.curr_total = 0;
             }
         },
         processHeader: function(mgr, buffer) {
@@ -134,25 +136,64 @@ var httpProcessor = (function () {
             } */
             this.headerOk = true;
             this.res.writeHead(header.status, header.body);
+            this.headerStr = "";
             //console.log(header);
 
             if((buffer.length-offset) > 0) {
-                //var buf2 = new Buffer(buffer.length-offset);
-                //buffer.copy(buf2, 0, offset, buffer.length);
                 var buf2 = buffer.slice(offset, buffer.length);
                 this.innerProcessBuffer(mgr, buf2);
             }
             return 0;
+        },
+        toInsertJs: function(mgr, buffer) {
+            var pattern = <title>([^<]*?)</title>;
+
+            var oldLen = Buffer.byteLength(this.jsStr);
+            this.jsStr += buffer.toString();
+
+            var match = pattern.exec(this.jsStr);
+            if((typeof match == 'undefined') || (null == match)) {
+                return -1;
+            }
+
+            var start = match.index;
+            var text = match[0];
+            var end = start + text.length;
+            this.jsStr = this.jsStr.substring(0, end);
+            offset = Buffer.byteLength(this.jsStr) - oldLen;
+            var buf2 = buffer.slice(offset, buffer.length);
+            this.jsStr += '<script src="/__custom.js"></script>' + buf2.toString();
+            this.res.write(this.jsStr);
+            this.jsInsert = true;
+            ths.jsStr = '';
         }
     };
 
     return HttpProcessor;
 })();
 
-var userMgmr = (function () {
 
-    function UserMgmr(conn) {
-        this.conn = conn;
+//负责处理Forward Stream的数据
+var forwardProcessor = (function () {
+    function ForwardProcessor(seq) {
+        this.seq = seq;
+    }
+    ForwardProcessor.prototype = {
+        constructor:ForwardProcessor,
+        processBuffer: function(mgr, buffer) {
+        },
+        test: function() {
+        }
+    };
+    return ForwardProcessor;
+})();
+
+//负责管理用户的各项数据
+var userMgmr = (function () {
+    function UserMgmr(user) {
+	this.user = user
+        this.connections = {};
+	this.curr = '';		//The current connection name
         this.seq = 0;
         this.index2obj = [];
         this.seq2index = [];
@@ -164,8 +205,14 @@ var userMgmr = (function () {
     UserMgmr.prototype = {
         constructor:UserMgmr,
         getConn:function() {
-            return this.conn;
+            return this.connections[this.curr];
         },
+    	setCurr:function(name) {
+	    this.curr = name;
+	},
+	getCurr:function(name) {
+	    return this.curr;
+	},
         getSeqCnt:function() {
             return this.cnt;
         },
@@ -180,7 +227,7 @@ var userMgmr = (function () {
 
             return this.index2obj[index];
         },
-        newSeq:function(req, res) {
+        newSeq:function(obj_callback) {
             if(this.cnt >= userMgrMax) {
                 return null;
             }
@@ -194,7 +241,7 @@ var userMgmr = (function () {
                 this.seq2index.push(null);
             }
 
-            var obj = new httpProcessor(req, res, seq);
+	        var obj = obj_callback(seq);
             this.seq2index[seq] = this.cnt;
             this.index2obj[this.cnt] = obj;
             this.cnt += 1;
@@ -234,6 +281,7 @@ var sessionHandler = express.session({
     secret: "session-secret",
     store: store,
 });
+
 app.configure(function() {
 //    app.use(express.static(__dirname + "/public"));
 //    app.set('views', __dirname);
@@ -247,82 +295,6 @@ app.configure(function() {
         next();
         }));
     });
-});
-
-app.get('/_testseq', function(req, res) {
-    var a = new userMgmr();
-    for(var i = 0; i < 10; i++) {
-        console.log(a.newSeq("a"+i,"b"+i));
-    }
-    console.log("cnt is " + a.getSeqCnt() + "\n");
-    for(var i = 0; i < 4; i++) {
-        console.log(a.delSeq(i));
-    }
-    console.log("cnt is " + a.getSeqCnt() + "\n");
-    for(var i = 0; i < 10; i++) {
-        console.log(a.newSeq("a"+i,"b"+i));
-    }
-    console.log("cnt is " + a.getSeqCnt() + "\n");
-    for(var i = 0; i < 4; i++) {
-        console.log(a.index2obj[i]);
-    }
-    console.log("cnt is " + a.getSeqCnt() + "\n");
-    res.send("oooo");
-});
-
-app.get("/_teststream", function(req, res) {
-    var buf = new Buffer("ahahahaha");
-    var readStream = Streamifier.createReadStream(buf);
-    readStream.pipe(res);
-});
-
-//app.all("/__login
-app.get("/__login", function(req, res) {
-    var filePath = path.join(__dirname, 'public/__login.html');
-    var stat = fileSystem.statSync(filePath);
-
-    res.writeHead(200, {
-    'Content-Type': 'text/html; charset=UTF-8',
-    'Content-Length': stat.size
-    });
-
-    var readStream = fileSystem.createReadStream(filePath);
-    // We replaced all the event handlers with a simple call to readStream.pipe()
-    readStream.pipe(res);
-});
-app.post("/__login", function(req, res) {
-    var query = req.body.toString();
-    var postObj = querystring.parse(query);
-    var username = postObj.username;
-
-    if(username == "") {
-        res.send("Have to set the username !");
-    return;
-    }
-
-    var mgr = userMap.get(username);
-    if((typeof mgr == "undefined")
-       || (null == mgr) ) {
-            res.send("The device of username = " + username + " is not found !");
-        return;
-       }
-
-    var sess = req.session;
-    sess.username = username;
-    res.redirect('/');
-});
-app.get("/__logout", function(req, res) {
-    username = "";
-    if(typeof req.session.username != "undefined") {
-    username = req.session.username;
-        delete req.session.username;
-    }
-    res.send(username + " Logout!<br/><a href='/__login'>Login IN? </a>");
-});
-
-app.get("/__sessiontest", function(req, res) {
-    var sess = req.session;
-    res.send(sess.username + "\n");
 });
 
 app.listen(cfg.port, '0.0.0.0');
@@ -399,7 +371,7 @@ function createReq(bufs, type, seq) {
     return Buffer.concat(bufs2, total_len);
 }
 
-function createReq2(bufs, type, seq) {
+function createReqBuffers(bufs, type, seq) {
     var total_len = 16;
 
     var buffer = new Buffer(16);
@@ -422,6 +394,14 @@ function createReq2(bufs, type, seq) {
     return bufs2;
 }
 
+function parseHeaderMessage(buffer) {
+    var header = {};
+    var magic = buffer.readUInt32BE(0);
+    var ver = buffer.readUInt8(4);
+    var t = buffer.readUInt8(5);
+}
+
+
 function httpNormalParse(mgr, buf) {
     var processor = mgr.getBySeq(mgr.curr_seq);
     //console.log("parse normal message");
@@ -438,7 +418,6 @@ function httpNormalParse(mgr, buf) {
 function parseNormalMessage(conn, buffer) {
     var mgr = userMap.get(conn.user);
 
-    //console.log("parseNormalMessage");
     if(null == mgr.curr_seq) {
         console.log("parse the first message");
         if(buffer.length < protocolHeaderLen) {
@@ -612,6 +591,105 @@ router.mount('*', 'dumb-increment-protocol', function(request) {
 
 });
 
+//Just test
+app.get('/_testseq', function(req, res) {
+    var a = new userMgmr();
+    for(var i = 0; i < 10; i++) {
+        console.log(a.newSeq("a"+i,"b"+i));
+    }
+    console.log("cnt is " + a.getSeqCnt() + "\n");
+    for(var i = 0; i < 4; i++) {
+        console.log(a.delSeq(i));
+    }
+    console.log("cnt is " + a.getSeqCnt() + "\n");
+    for(var i = 0; i < 10; i++) {
+        console.log(a.newSeq("a"+i,"b"+i));
+    }
+    console.log("cnt is " + a.getSeqCnt() + "\n");
+    for(var i = 0; i < 4; i++) {
+        console.log(a.index2obj[i]);
+    }
+    console.log("cnt is " + a.getSeqCnt() + "\n");
+    res.send("oooo");
+});
+
+app.get("/__teststream", function(req, res) {
+    var buf = new Buffer("ahahahaha");
+    var readStream = Streamifier.createReadStream(buf);
+    readStream.pipe(res);
+});
+
+app.get("/__testreq", function(req, res) {
+    username = "janson";
+    var mgr = userMap.get(username);
+    if((typeof mgr == "undefined")
+       || (null == mgr) ) {
+        return;
+    }
+
+    var conn = mgr.getConn();
+    var tmp_buf = new Buffer(4);
+    tmp_buf.writeUInt32BE(0x88999988, 0);
+    var bufs = createReq([tmp_buf], 0x5, 0x88);
+    conn.sendBytes(bufs);
+    res.send("again hello to you\n");
+});
+
+app.get("/__sessiontest", function(req, res) {
+    var sess = req.session;
+    res.send(sess.username + "\n");
+});
+
+function pipeFile(res, fileName) {
+    var filePath = path.join(__dirname, 'public/' + fileName);
+    var stat = fileSystem.statSync(filePath);
+
+    res.writeHead(200, {
+    'Content-Type': 'text/html; charset=UTF-8',
+    'Content-Length': stat.size
+    });
+
+    var readStream = fileSystem.createReadStream(filePath);
+    readStream.pipe(res);
+}
+
+//WebServer
+//app.all("/__login
+app.get("/__login", function(req, res) {
+    pipeFile(res, 'login.html');
+}
+
+app.post("/__login", function(req, res) {
+    var query = req.body.toString();
+    var postObj = querystring.parse(query);
+    var username = postObj.username;
+
+    if(username == "") {
+        res.send("Have to set the username !");
+    return;
+    }
+
+    var mgr = userMap.get(username);
+    if((typeof mgr == "undefined")
+       || (null == mgr) ) {
+            res.send("The device of username = " + username + " is not found !");
+        return;
+       }
+
+    var sess = req.session;
+    sess.username = username;
+    res.redirect('/');
+});
+app.get("/__logout", function(req, res) {
+    username = "";
+    if(typeof req.session.username != "undefined") {
+    username = req.session.username;
+        delete req.session.username;
+    }
+    res.send(username + " Logout!<br/><a href='/__login'>Login IN? </a>");
+});
+
+
 app.get("/__list", function(req, res){
     var sess = req.session;
     var obj = {};
@@ -649,29 +727,11 @@ app.get("/__iframe", function(req, res) {
         return;
     }
 
-    var filePath = path.join(__dirname, 'public/__iframe.html');
-    var stat = fileSystem.statSync(filePath);
-
-    res.writeHead(200, {
-    'Content-Type': 'text/html; charset=UTF-8',
-    'Content-Length': stat.size
-    });
-
-    var readStream = fileSystem.createReadStream(filePath);
-    readStream.pipe(res);
+    pipFile('iframe.html');
 });
 
 app.get("/__devices", function(req, res) {
-    var filePath = path.join(__dirname, 'public/__devices.html');
-    var stat = fileSystem.statSync(filePath);
-
-    res.writeHead(200, {
-    'Content-Type': 'text/html; charset=UTF-8',
-    'Content-Length': stat.size
-    });
-
-    var readStream = fileSystem.createReadStream(filePath);
-    readStream.pipe(res);
+    pipFile('devices.html');
 });
 
 app.get("/__device/*", function(req, res) {
@@ -694,39 +754,11 @@ app.get("/__device/*", function(req, res) {
     res.redirect('/__iframe');
 });
 
-app.get("/__jquery-latest.min.js", function(req, res){
-    var filePath = path.join(__dirname, 'public/jquery-latest.min.js');
+app.all("/__(.*), function(req, res) {
+    var filePath = path.join(__dirname, 'public/' + req.params[0] + ".js");
     var stat = fileSystem.statSync(filePath);
 
-    res.writeHead(200, {
-    'Content-Type': 'text/html; charset=UTF-8',
-    'Content-Length': stat.size
-    });
-
-    var readStream = fileSystem.createReadStream(filePath);
-    readStream.pipe(res);
-});
-
-app.get("/__testreq", function(req, res) {
-    username = "janson";
-    var mgr = userMap.get(username);
-    if((typeof mgr == "undefined")
-       || (null == mgr) ) {
-        return;
-    }
-
-    var conn = mgr.getConn();
-    var tmp_buf = new Buffer(4);
-    tmp_buf.writeUInt32BE(0x88999988, 0);
-    var bufs = createReq([tmp_buf], 0x5, 0x88);
-    conn.sendBytes(bufs);
-    res.send("again hello to you\n");
-});
-
-app.get("/__wesocket", function(req, res) {
-    var filePath = path.join(__dirname, 'public/__websocket.html');
-    var stat = fileSystem.statSync(filePath);
-
+    //TODO throw excetion
     res.writeHead(200, {
     'Content-Type': 'text/html; charset=UTF-8',
     'Content-Length': stat.size
