@@ -2100,7 +2100,7 @@ int process_tcp_forwardresp(http_mgmt *mgmt)
     return 0;
 }
 
-int tcp_forward_write(http_mgmt* mgmt, tcp_forward_context* tcp_forward) 
+int tcp_forward_write(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
 {
     int n = 0;
     http_buf_info* buf_info = tcp_forward->buf_write.curr;

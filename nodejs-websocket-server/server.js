@@ -53,7 +53,7 @@ var httpProcessor = (function () {
         innerProcessBuffer: function(mgr, buffer) {
             if((!this.jsInsert) && (this.req.url == '/')) {
                 this.toInsertJs(mgr, buffer);
-            } 
+            }
             else {
                 this.res.write(buffer);
             }
@@ -191,9 +191,9 @@ var forwardProcessor = (function () {
 //负责管理用户的各项数据
 var userMgmr = (function () {
     function UserMgmr(user) {
-	this.user = user
+        this.user = user
         this.connections = {};
-	this.curr = '';		//The current connection name
+        this.curr_device = '';         //The current connection name
         this.seq = 0;
         this.index2obj = [];
         this.seq2index = [];
@@ -205,14 +205,17 @@ var userMgmr = (function () {
     UserMgmr.prototype = {
         constructor:UserMgmr,
         getConn:function() {
-            return this.connections[this.curr];
+            return this.connections[this.curr_device];
         },
-    	setCurr:function(name) {
-	    this.curr = name;
-	},
-	getCurr:function(name) {
-	    return this.curr;
-	},
+        addConn:function(conn, name) {
+            this.connections[name] = conn;
+        },
+        setCurr:function(name) {
+            this.curr_device = name;
+        },
+        getCurr:function() {
+            return this.curr;
+        },
         getSeqCnt:function() {
             return this.cnt;
         },
@@ -241,7 +244,7 @@ var userMgmr = (function () {
                 this.seq2index.push(null);
             }
 
-	        var obj = obj_callback(seq);
+            var obj = obj_callback(seq);
             this.seq2index[seq] = this.cnt;
             this.index2obj[this.cnt] = obj;
             this.cnt += 1;
@@ -396,11 +399,13 @@ function createReqBuffers(bufs, type, seq) {
 
 function parseHeaderMessage(buffer) {
     var header = {};
-    var magic = buffer.readUInt32BE(0);
-    var ver = buffer.readUInt8(4);
-    var t = buffer.readUInt8(5);
+    header.magic = buffer.readUInt32BE(0);
+    header.ver = buffer.readUInt8(4);
+    header.type = buffer.readUInt8(5);
+    header.seq = buffer.readUInt16BE(6);
+    header.length = buffer.readUInt32BE(8);
+    return header;
 }
-
 
 function httpNormalParse(mgr, buf) {
     var processor = mgr.getBySeq(mgr.curr_seq);
@@ -412,7 +417,30 @@ function httpNormalParse(mgr, buf) {
         return;
     }
 
+    //processor is web for tcp forward
     processor.processBuffer(mgr, buf);
+}
+
+function parseTunnelReq(mgr, conn, buffer, protoHeader) {
+    var tmpseq = protoHeader.seq;
+    var auth = buffer.readUInt32BE(16);
+    console.log("seq " + tmpseq + " " + auth);
+
+    var filePath = path.join(__dirname, 'config.json');
+    var readStream = fileSystem.createReadStream(filePath);
+    var filestr = "";
+    readStream.on('data', function(data) {
+        filestr += data;
+    });
+    readStream.on('end', function() {
+        console.log("config.json " + filestr);
+        var tmp_len = Buffer.byteLength(filestr) + 4;
+        var tmp_buf = new Buffer(tmp_len);
+        tmp_buf.writeUInt32BE(tmp_len, 0);
+        tmp_buf.write(filestr, 4);
+        var buf2 = createReq([tmp_buf], 0x6, tmpseq);
+        conn.sendBytes(buf2);
+    });
 }
 
 function parseNormalMessage(conn, buffer) {
@@ -435,41 +463,20 @@ function parseNormalMessage(conn, buffer) {
         }
 
         // Wait for first message
-        var magic = buffer.readUInt32BE(0);
-        var ver = buffer.readUInt8(4);
-        var t = buffer.readUInt8(5);
-        if((magic != 0x10293874)
-           || (ver != 0x1)) {
-               console.log("get first message error " + magic + " ver " + ver + " type " + t);
+        var protoHeader = parseHeaderMessage(buffer);
+        if((protoHeader.magic != 0x10293874)
+           || (protoHeader.ver != 0x1)) {
+            console.log("get first message error " + protoHeader);
             return;
         }
 
-	if(t == 0x5) {
-		var tmpseq = buffer.readUInt16BE(6);
-		var auth = buffer.readUInt32BE(16);
-		console.log("seq " + tmpseq + " " + auth);
+        if(protoHeader.type == 0x5) {
+            parseTunnelReq(mgr, conn, buffer, protoHeader);
+            return;
+        }
 
-    		var filePath = path.join(__dirname, 'config.json');
-    		var readStream = fileSystem.createReadStream(filePath);
-		var filestr = "";
-		readStream.on('data', function(data) {
-			filestr += data;
-		});
-		readStream.on('end', function() {
-			console.log("config.json " + filestr);
-			var tmp_len = Buffer.byteLength(filestr) + 4;
-			var tmp_buf = new Buffer(tmp_len);
-			tmp_buf.writeUInt32BE(tmp_len, 0);
-			tmp_buf.write(filestr, 4);
-			var buf2 = createReq([tmp_buf], 0x6, tmpseq);
-			conn.sendBytes(buf2);
-		});
-
-		return;
-	}
-
-        mgr.curr_seq = buffer.readUInt16BE(6);
-        mgr.curr_total = buffer.readUInt32BE(8);
+        mgr.curr_seq = protoHeader.seq;
+        mgr.curr_total = protoHeader.length;
         console.log("get curr_seq = " + mgr.curr_seq + "total len = " + mgr.curr_total);
         mgr.curr_total -=  protocolHeaderLen; //exclude the header length
 
@@ -490,13 +497,11 @@ function connectionParse(connection, message) {
     var buffer = message.binaryData;
 
     if(typeof connection.user == "undefined") {
-        var magic = buffer.readUInt32BE(0);
-        var ver = buffer.readUInt8(4);
-        var t = buffer.readUInt8(5);
-        if((magic != 0x10293874)
-           || (ver != 0x1)
-           || (t != 0x3)) {
-               console.log("parse handshake message error " + magic + " " + ver + " " + t);
+        var protoHeader = parseHeaderMessage(buffer);
+        if((protoHeader.magic != 0x10293874)
+           || (protoHeader.ver != 0x1)
+           || (protoHeader.type != 0x3)) {
+               console.log("parse handshake message error, header is " + header);
             return;
         }
 
@@ -506,18 +511,23 @@ function connectionParse(connection, message) {
         connection.port = o.port;
         console.log("get username= " + o.username + " host " + o.host + " port " + o.port);
 
-	/* if(o.username == 'janson') {
-		connection.close();
-		return;
-	} */
+    /* if(o.username == 'janson') {
+        connection.close();
+        return;
+    } */
 
         var buf = new Buffer(4);
         buf.writeUInt32BE(0x1234, 0);
         connection.sendBytes(createReq([buf], 0x3, 0x0));
 
-        var mgr = new userMgmr(connection);
-        userMap.set(connection.user, mgr);
-        console.log("add user " + connection.user + " to userMap")
+        var mgr = userMap.get(o.username);
+        if(typeof mgr == 'undefined' || null == mgr) {
+            mgr = new userMgmr(o.username);
+        }
+        var devicename = Math.floor(Math.random() * 100000) + 1;
+        connection.devicename = devicename + '';
+        mgr.addConn(connection, connection);
+        console.log("add user " + connection.user + " devicename " + connection.devicename + " to userMap");
         return;
     }
 
@@ -530,12 +540,81 @@ function getSidFromCookies(cookies) {
      return filtered.length > 0 ? filtered[0].value : null;
 }
 
+function textProcess(conn) {
+    console.log(message.utf8Data);
+    if((typeof conn.sess_username == "undefined")
+       || (typeof conn.sess_devicename == 'undefined')) {
+        // Check login
+        connection.close();
+        return false;
+    }
+
+    var mgr = userMap.get(conn.sess_username);
+    if((typeof mgr == 'undefined') || (null == mgr)) {
+        return false;
+    }
+
+    if(typeof conn.seq == 'undefined') {
+        if(message.utf8Data != 'hello') {
+            return false;
+        }
+
+        // From browser, Parse handshake
+        mgr.newSeq(function (seq) {
+            conn.seq = seq;
+            var processor = new forwardProcessor(seq);
+            return processor;
+        });
+
+        var obj = {};
+        obj.seq = conn.seq;
+        obj.type = "handshake";
+        obj.message = "hello";
+        conn.sendUTF(JSON.stringify(obj));
+    }
+
+    //Message from browser, forward to web-tunnel client
+    try {
+        var obj = JSON.parse(message.utf8Data);
+        if(obj.seq != conn.seq) {
+            console.log("Forward websocket, the seq is error");
+            return false;
+        }
+
+        var client_conn = mgr.getCurr();
+        if((typeof client_conn == "undefined") || (null == client_conn)) {
+            console.log("client connection losted");
+            return false;
+        }
+
+        if(obj.type == "openning") {
+            //event to client, prepare for telnet
+            var buf = new Buffer(4);
+            var port = parseInt(obj.message);
+            buf.writeUInt16BE(conn.seq, port);
+            var bufs = createReq([buf], 0x10, conn.seq);
+            client_conn.sendBytes(bufs);
+        }
+        else {
+            //Just forward to client
+            var buf = new Buffer(obj.message);
+            var bufs = createReq([buf], 0x11, conn.seq);
+            client_conn.sendBytes(bufs);
+        }
+
+        return true;
+    } catch(e) {
+        return false;
+    }
+}
+
 function newConnection(request, sess) {
     var connection = request.accept(request.origin);
 
-    if((typeof sess != "undefined") 
+    if((typeof sess != "undefined")
           && (typeof sess.username != "undefined")) {
           connection.sess_username = sess.username;
+          connection.sess_devicename = sess.devicename;
     }
 
     console.log((new Date()) + " dumb-increment-protocol connection accepted from " + connection.remoteAddress +
@@ -544,28 +623,7 @@ function newConnection(request, sess) {
     //TODO wait for handshake, if timeout, delete it.
     connection.on('message', function(message) {
         if (message.type === 'utf8') {
-            console.log(message.utf8Data);
-	    if(typeof connection.sess_username == "undefined") {
-		// Check login
-		connection.close();
-	    }
-
-	    //Parse handshake
-	    if(message.utf8Data == 'hello') {
-		var obj = {};
-		obj.seq = 555;
-		connection.sendUTF(JSON.stringify(obj));
-	    } else {
-		var obj = JSON.parse(message.utf8Data);
-		if(obj.msg == 'hello') {
-		    //create a new forward client
-		    ;
-		} else {
-		    //forward to web-tunnel client
-		    ;
-		}
-	    }
-	    
+            textProcess(connection);
         }
         else {
             connectionParse(this, message);
@@ -582,11 +640,11 @@ router.mount('*', 'dumb-increment-protocol', function(request) {
     // Should do origin verification here. You have to pass the accepted
     // origin into the accept method of the request.
     parseCookie(request.httpRequest, null, function(err) {
-	    var connect_sid = getSidFromCookies(request.cookies);
-	    store.get(connect_sid, function(err, sess) {
-		console.log("The session is " + sess + " connect.sid= " + connect_sid );
-		newConnection(request, sess);
-	    });
+        var connect_sid = getSidFromCookies(request.cookies);
+        store.get(connect_sid, function(err, sess) {
+            console.log("The session is " + sess + " connect.sid= " + connect_sid );
+            newConnection(request, sess);
+        });
     });
 
 });
@@ -654,7 +712,7 @@ function pipeFile(res, fileName) {
 }
 
 //WebServer
-//app.all("/__login
+//app.all
 app.get("/__login", function(req, res) {
     pipeFile(res, 'login.html');
 }
@@ -666,7 +724,7 @@ app.post("/__login", function(req, res) {
 
     if(username == "") {
         res.send("Have to set the username !");
-    return;
+        return;
     }
 
     var mgr = userMap.get(username);
@@ -678,7 +736,7 @@ app.post("/__login", function(req, res) {
 
     var sess = req.session;
     sess.username = username;
-    res.redirect('/');
+    res.redirect('/__devices');
 });
 app.get("/__logout", function(req, res) {
     username = "";
@@ -689,14 +747,13 @@ app.get("/__logout", function(req, res) {
     res.send(username + " Logout!<br/><a href='/__login'>Login IN? </a>");
 });
 
-
 app.get("/__list", function(req, res){
     var sess = req.session;
     var obj = {};
 
-    obj.device = "";
-    if(typeof sess.username != "undefined") {
-        obj.device = sess.username;
+    if(typeof sess.username == "undefined") {
+        res.redirect("/__login");
+        return;
     }
 
     var keys = [];
@@ -754,26 +811,17 @@ app.get("/__device/*", function(req, res) {
     res.redirect('/__iframe');
 });
 
-app.all("/__(.*), function(req, res) {
+app.all("/__(.*)", function(req, res) {
     var filePath = path.join(__dirname, 'public/' + req.params[0] + ".js");
-    var stat = fileSystem.statSync(filePath);
-
-    //TODO throw excetion
-    res.writeHead(200, {
-    'Content-Type': 'text/html; charset=UTF-8',
-    'Content-Length': stat.size
-    });
-
-    var readStream = fileSystem.createReadStream(filePath);
-    readStream.pipe(res);
+    pipeFile(res, filePath);
 });
 
 app.all("*", function (req, res) {
     //console.log(req.session);
     var sess = req.session;
     if(typeof sess.username == "undefined") {
-    res.redirect('/__devices');
-    return;
+        res.redirect('/__devices');
+        return;
     }
     var username = sess.username;
     var mgr = userMap.get(username);
@@ -798,7 +846,7 @@ app.all("*", function (req, res) {
     if(conn.port == 80) {
         header.host = conn.host;
     } else {
-    header.host = conn.host+":"+conn.port;
+        header.host = conn.host+":"+conn.port;
     }
     if(typeof header.referer != "undefined") {
     var tmp = "http://";
@@ -822,11 +870,13 @@ app.all("*", function (req, res) {
         console.log(req.body.toString());
     }
 
-   var processor = mgr.newSeq(req, res);
+   var processor = mgr.newSeq(function (seq) {
+       return httpProcessor(req, res, seq);
+   });
    console.log("new seq=" + processor.seq);
 
    var bufs2 = createReq2(bufs, 1, processor.seq);
    for(var i = 0; i < bufs2.length; i++) {
-    conn.sendBytes(bufs2[i]);
+        conn.sendBytes(bufs2[i]);
    }
 });
