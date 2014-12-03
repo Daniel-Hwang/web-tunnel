@@ -217,7 +217,7 @@ var forwardProcessor = (function () {
     ForwardProcessor.prototype = {
         constructor:ForwardProcessor,
         processBuffer: function(mgr, buffer) {
-            console.log("forwardProcessor hear");
+            //console.log("forwardProcessor hear");
 
             this.start += buffer.length;
 
@@ -560,7 +560,7 @@ function parseNormalMessage(conn, buffer) {
             //var buf2 = new Buffer(buffer.length-protocolHeaderLen);
             //buffer.copy(buf2, 0, protocolHeaderLen, buffer.length);
             var buf2 = buffer.slice(protocolHeaderLen, buffer.length);
-            console.log("the first message still have some buffers");
+            //console.log("the first message still have some buffers");
             httpNormalParse(mgr, buf2);
         }
     }
@@ -618,7 +618,7 @@ function getSidFromCookies(cookies) {
 }
 
 function textProcess(conn, message) {
-    console.log('from client browser ' + message.utf8Data);
+    //console.log('from client browser ' + message.utf8Data);
     if((typeof conn.sess_username == "undefined")
        || (typeof conn.sess_devicename == 'undefined')) {
         // Check login
