@@ -82,7 +82,7 @@ window.requestAnimFrame = (function(){
  * Logging/debug routines
  */
 
-Util._log_level = 'info';
+Util._log_level = 'warn';
 Util.init_logging = function (level) {
     if (typeof level === 'undefined') {
         level = Util._log_level;
