@@ -2148,15 +2148,21 @@ int tcp_forward_write(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
     while(buf_info != NULL)
     {
         n = write(tcp_forward->fwd_fd, buf_info->buf + buf_info->start, buf_info->len);
+        lwsl_info("tcp_forward_writed n = %d\n", n);
 
         if(n < 0) {
             if(errno == EINTR || errno == EAGAIN) {
+                lwsl_warn("tcp forward have to write buf again\n");
                 ccrReturn(tcp_forward, CALLER_PENDING);
             }
             else {
                 lwsl_warn("tcp forward write sock error\n");
                 ccrReturn(tcp_forward, CALLER_FINISH);
             }
+        }
+        else if((!n) && ((errno != EINTR) && (errno != EAGAIN))) {
+            lwsl_warn("The tcp forward has closed\n");
+            ccrReturn(tcp_forward, CALLER_FINISH);
         }
 
         if((buf_info->len -= n) > 0) {
