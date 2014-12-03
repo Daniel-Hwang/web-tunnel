@@ -1,0 +1,75 @@
+<html>
+
+    <head>
+        <title>Telnet client using WebSockets</title>
+        <script src="__include/base64.js"></script>
+        <script src="__include/util.js"></script>
+        <script src="__include/websock.js"></script>
+        <script src="__include/webutil.js"></script> 
+        <script src="__include/keysym.js"></script> 
+        <script src="__include/VT100.js"></script> 
+        <script src="__include/wstelnet.js"></script> 
+        <!-- Uncomment to activate firebug lite -->
+        <!--
+        <script type='text/javascript' 
+            src='http://getfirebug.com/releases/lite/1.2/firebug-lite-compressed.js'></script>
+        -->
+
+
+    </head>
+
+    <body>
+        <br><br>
+
+        <pre id="terminal"></pre>
+
+        <script>
+		function get_appropriate_ws_url()
+		{
+		    var pcol;
+		    var u = document.URL;
+
+		    /*
+		     * We open the websocket encrypted if this page came on an
+		     * https:// url itself, otherwise unencrypted
+		     */
+
+		    if (u.substring(0, 5) == "https") {
+			pcol = "wss://";
+			u = u.substr(8);
+		    } else {
+			pcol = "ws://";
+			if (u.substring(0, 4) == "http")
+			    u = u.substr(7);
+		    }
+
+		    u = u.split('/');
+
+		    return pcol + u[0];
+		}
+
+            var telnet;
+
+            function connect() {
+		var ws_url = get_appropriate_ws_url();
+		console.log("the url is " + ws_url);
+                telnet.connect(ws_url);
+            }
+
+            function connected() {
+            }
+
+            function disconnected() {
+            }
+
+            window.onload = function() {
+                console.log("onload");
+                telnet = Telnet('terminal', connected, disconnected);
+
+		connect();
+            }
+        </script>
+
+    </body>
+
+</html>

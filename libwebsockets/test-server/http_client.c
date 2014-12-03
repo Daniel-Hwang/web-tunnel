@@ -448,7 +448,7 @@ void prepare_process(http_mgmt* mgmt)
             release_prepare(mgmt);
         }
         break;
-    case HTTP_C_FORWARD_RESP:
+    case HTTP_C_FORWARD_REQ:       //The client send forward req
         if(0 != process_tcp_forwardresp(mgmt)) {
             release_prepare(mgmt);
         }
@@ -2132,13 +2132,15 @@ int tcp_forward_write(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
     /* Set to busy */
     tcp_forward->idle = 0;
 
+    //Have to set every time
+    buf_info = tcp_forward->buf_write.curr;
+
     lwsl_info("tcp_forward_write\n");
 
     ccrBegin(tcp_forward);
 
     /* Only run once */
     tcp_forward->buf_write.curr = next_buf_info(&tcp_forward->buf_write.list_todo);
-    buf_info = tcp_forward->buf_write.curr;
 
 
     while(buf_info != NULL)
@@ -2168,6 +2170,8 @@ int tcp_forward_write(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
     }
 
     /* Write complete, switch to idle and wait for read */
+    lwsl_info("write complete\n");
+
     pfd->events &= ~POLLOUT;
     pfd->events |= POLLIN;
     tcp_forward->func_run = &tcp_forward_read;
@@ -2208,7 +2212,7 @@ int tcp_forward_read(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
             header->magic = htonl(HTTP_C_MAGIC);
             header->version = HTTP_C_VERSION;
             header->type = HTTP_C_FORWARD_RESP;
-            header->seq = tcp_forward->seq;
+            header->seq = htons(tcp_forward->seq);
             header->length = htonl(buf_info->len);
             header->reserved = 0;
 

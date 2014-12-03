@@ -18,6 +18,27 @@ if (typeof String.prototype.endsWith !== 'function') {
     };
 }
 
+var mime_types = {
+    "css": "text/css",
+    "gif": "image/gif",
+    "html": "text/html",
+    "ico": "image/x-icon",
+    "jpeg": "image/jpeg",
+    "jpg": "image/jpeg",
+    "js": "text/javascript",
+    "json": "application/json",
+    "pdf": "application/pdf",
+    "png": "image/png",
+    "svg": "image/svg+xml",
+    "swf": "application/x-shockwave-flash",
+    "tiff": "image/tiff",
+    "txt": "text/plain",
+    "wav": "audio/x-wav",
+    "wma": "audio/x-ms-wma",
+    "wmv": "video/x-ms-wmv",
+    "xml": "text/xml"
+};
+
 var cfg = {
     ssl: false,
     port: 8060,
@@ -206,7 +227,8 @@ var forwardProcessor = (function () {
                 var obj = {};
                 obj.seq = mgr.curr_seq;
                 obj.type = "response";
-                obj.message = buffer.toString();
+                obj.message = buffer.toString("base64");
+		//console.log("base64 string is :" + obj.message);
                 var forward_conn = forward.getConn();
                 forward_conn.sendUTF(JSON.stringify(obj));
             }
@@ -660,10 +682,10 @@ function textProcess(conn, message) {
         }
         else {
             //Just forward to client
-            var buf = new Buffer(obj.message);
+            var buf = new Buffer(obj.message, "base64");
             var bufs = createReq([buf], 0x11, conn.seq);
             client_conn.sendBytes(bufs);
-            console.log("forward " + obj.message + " to client");
+            //console.log("forward " + buf.toString() + " to client");
         }
 
         return true;
@@ -714,7 +736,7 @@ function newConnection(request, sess) {
             var mgr = userMap.get(this.user);
             if((typeof mgr != "undefined")
                && (typeof this.devicename != "undefined")) {
-                    mgr.delConnByName(conn.devicename);
+                    mgr.delConnByName(this.devicename);
             }
         }
         else if(typeof this.sess_username != "undefined") {
@@ -792,14 +814,10 @@ app.get("/__sessiontest", function(req, res) {
 function pipeFile(res, fileName) {
     var filePath = path.join(__dirname, 'public/' + fileName);
     var stat = fileSystem.statSync(filePath);
+    var ext = path.extname(filePath);
+    ext = ext ? ext.slice(1) : 'unknown';
 
-    var contentType = '';
-    if(fileName.endsWith(".js")) {
-        contentType = "text/plain";
-    }
-    else {
-        contentType = 'text/html; charset=UTF-8';
-    }
+    var contentType = (mime_types[ext] || "text/plain");
     res.writeHead(200, {
     'Content-Type': contentType,
     'Content-Length': stat.size
@@ -930,7 +948,8 @@ app.get("/__device/:dev", function(req, res) {
 });
 
 app.get("/__do-telnet", function(req, res) {
-    pipeFile(res, 'websocket.html');
+    //pipeFile(res, 'websocket.html');
+    pipeFile(res, "wstelnet.html");
 });
 
 // TODO Make this better
@@ -969,8 +988,9 @@ app.get("/__telnet/:dev", function(req, res) {
     res.redirect("/__do-telnet");
 });
 
-app.get("/__jquery.js", function(req, res) {
-    pipeFile(res, "jquery.js");
+app.get(/\__(.*)/, function(req, res) {
+    //console.log(" got file: " + req.params[0]);
+    pipeFile(res, req.params[0]);
 });
 
 app.all("*", function (req, res) {
