@@ -2047,12 +2047,16 @@ int tcp_server_run(http_mgmt* mgmt)
 
 int process_tcp_forward(http_mgmt* mgmt)
 {
+    tcp_forward_context* tcp_forward;
     unsigned short seq, port;
+    unsigned int type;
+    int the_len = 8;
+
     http_buf_info* buf_info;
     http_buf* pbuf = &mgmt->buf_prepare;
 
     /* The header is parsed */
-    if(pbuf->len != (2*sizeof(unsigned short))) {
+    if(pbuf->len != the_len) {
         lwsl_warn("process packet forward, packet length not ok len=%d\n", pbuf->len);
         return -1;
     }
@@ -2060,11 +2064,30 @@ int process_tcp_forward(http_mgmt* mgmt)
     buf_info = next_buf_info(&pbuf->list_todo);
     memcpy(&seq, buf_info->buf, sizeof(unsigned short));
     memcpy(&port, buf_info->buf + sizeof(unsigned short), sizeof(unsigned short));
+    memcpy(&type, buf_info->buf+4, sizeof(unsigned int));
     seq = htons(seq);
     port = htons(port);
+    type = htonl(type);
 
-    /* Now create tcp_forward */
-    tcp_forward_create(mgmt, seq, port);
+    if(0 == type) {
+        /* Now create tcp_forward */
+        tcp_forward_create(mgmt, seq, port);
+    }
+    else {
+        /* Delete the connection */
+        list_for_each_entry(tcp_forward, &mgmt->list_forward, node) {
+            if(pbuf->seq == tcp_forward->seq) {
+                break;
+            }
+        }
+        if((NULL == tcp_forward)
+                || (&mgmt->list_forward == &tcp_forward->node)) {
+            /* Not found */
+            return -1;
+        }
+
+        tcp_forward_release(mgmt, tcp_forward);
+    }
 
     release_prepare(mgmt);
     return 0;
@@ -2177,12 +2200,18 @@ int tcp_forward_read(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
         n = read(tcp_forward->fwd_fd, buf_info->buf + HTTP_C_HEADER_LEN, left);
         if(n > 0) {
             lwsl_info("Tcp client got n=%d, forwarding to websocket server\n", n);
+
+            buf_info->start = 0;
+            buf_info->len = n + HTTP_C_HEADER_LEN;
+            buf_info->total_len = buf_info->len;
+
             header->magic = htonl(HTTP_C_MAGIC);
             header->version = HTTP_C_VERSION;
-            header->type = HTTP_C_FORWARD_REQ;
+            header->type = HTTP_C_FORWARD_RESP;
             header->seq = tcp_forward->seq;
-            header->length = htonl(n + HTTP_C_HEADER_LEN);
+            header->length = htonl(buf_info->len);
             header->reserved = 0;
+
             list_add_tail(&buf_info->node, &mgmt->buf_toserver.list_todo);
             buf_info = NULL;    //Set to null, so it will not be free
             http_mgmt_toserver(mgmt);
@@ -2311,6 +2340,8 @@ int tcp_forward_release(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
     assert(NULL != tcp_forward);
 
     list_del(&tcp_forward->node);
+
+    lwsl_info("delete tcp_forward seq=%d ", tcp_forward->seq);
 
     if(tcp_forward->fwd_fd > 0) {
         mgmt_del_fd(mgmt, tcp_forward->fwd_fd);

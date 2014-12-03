@@ -12,6 +12,12 @@ var fileSystem = require('fs');
 var path = require('path');
 var querystring = require("querystring");
 
+if (typeof String.prototype.endsWith !== 'function') {
+    String.prototype.endsWith = function(suffix) {
+        return this.indexOf(suffix, this.length - suffix.length) !== -1;
+    };
+}
+
 var cfg = {
     ssl: false,
     port: 8060,
@@ -69,6 +75,11 @@ var httpProcessor = (function () {
             }
 
             if(this.start >= mgr.curr_total) {
+
+                if(this.jsStr.length > 0) {
+                    this.res.write(this.jsStr);
+                }
+
                 this.res.end();
                 mgr.delSeq(mgr.curr_seq);
                 mgr.curr_seq = null;
@@ -146,15 +157,17 @@ var httpProcessor = (function () {
             return 0;
         },
         toInsertJs: function(mgr, buffer) {
-            var pattern = <title>([^<]*?)</title>;
+            var pattern = /<title>([^<]*?)<\/title>/i;
 
             var oldLen = Buffer.byteLength(this.jsStr);
             this.jsStr += buffer.toString();
 
             var match = pattern.exec(this.jsStr);
             if((typeof match == 'undefined') || (null == match)) {
+                //console.log("not match " + this.jsStr);
                 return -1;
             }
+            //console.log("match " + this.jsStr);
 
             var start = match.index;
             var text = match[0];
@@ -175,14 +188,44 @@ var httpProcessor = (function () {
 
 //负责处理Forward Stream的数据
 var forwardProcessor = (function () {
-    function ForwardProcessor(seq) {
+    function ForwardProcessor(conn, seq) {
+        this.conn = conn;
         this.seq = seq;
+        this.start = 0;
     }
     ForwardProcessor.prototype = {
         constructor:ForwardProcessor,
         processBuffer: function(mgr, buffer) {
+            console.log("forwardProcessor hear");
+
+            this.start += buffer.length;
+
+            //TODO process buffer
+            var forward = mgr.getBySeq(mgr.curr_seq);
+            if(typeof forward != "undefined" && typeof forward.getConn() != "undefined") {
+                var obj = {};
+                obj.seq = mgr.curr_seq;
+                obj.type = "response";
+                obj.message = buffer.toString();
+                var forward_conn = forward.getConn();
+                forward_conn.sendUTF(JSON.stringify(obj));
+            }
+
+            if(this.start >= mgr.curr_total) {
+                //Delete processor at connection closing
+                //this.res.end();
+                //mgr.delSeq(mgr.curr_seq);
+
+                this.start = 0;
+
+                mgr.curr_seq = null;
+                mgr.curr_total = 0;
+                mgr.tmp_bufs = [];
+                mgr.tmp_bufs_len = 0;
+            }
         },
-        test: function() {
+        getConn: function() {
+            return this.conn;
         }
     };
     return ForwardProcessor;
@@ -204,20 +247,29 @@ var userMgmr = (function () {
 
     UserMgmr.prototype = {
         constructor:UserMgmr,
-        getConn:function() {
+        getCurrConn:function() {
             return this.connections[this.curr_device];
         },
-        addConn:function(conn, name) {
+        addConnByName:function(conn, name) {
             this.connections[name] = conn;
+        },
+        getConnByName:function(name) {
+            return this.connections[name];
+        },
+        delConnByName:function(name) {
+            delete this.connections[name];
         },
         setCurr:function(name) {
             this.curr_device = name;
         },
-        getCurr:function() {
-            return this.curr;
+        getCurrDevice:function() {
+            return this.curr_device;
         },
         getSeqCnt:function() {
             return this.cnt;
+        },
+        forEachDevices:function(f) {
+            Object.keys(this.connections).forEach(f);
         },
         getBySeq:function(seq) {
             if(seq >= this.seq2index.length) {
@@ -245,6 +297,8 @@ var userMgmr = (function () {
             }
 
             var obj = obj_callback(seq);
+            //console.log("created object is " + obj);
+
             this.seq2index[seq] = this.cnt;
             this.index2obj[this.cnt] = obj;
             this.cnt += 1;
@@ -409,7 +463,7 @@ function parseHeaderMessage(buffer) {
 
 function httpNormalParse(mgr, buf) {
     var processor = mgr.getBySeq(mgr.curr_seq);
-    //console.log("parse normal message");
+    //console.log("parse normal message " + processor);
     if(null == processor) {
         mgr.curr_seq = null;
         mgr.curr_total = 0;
@@ -417,7 +471,7 @@ function httpNormalParse(mgr, buf) {
         return;
     }
 
-    //processor is web for tcp forward
+    //processor is web or tcp forward
     processor.processBuffer(mgr, buf);
 }
 
@@ -523,10 +577,11 @@ function connectionParse(connection, message) {
         var mgr = userMap.get(o.username);
         if(typeof mgr == 'undefined' || null == mgr) {
             mgr = new userMgmr(o.username);
+            userMap.set(o.username, mgr);
         }
         var devicename = Math.floor(Math.random() * 100000) + 1;
         connection.devicename = devicename + '';
-        mgr.addConn(connection, connection);
+        mgr.addConnByName(connection, connection.devicename);
         console.log("add user " + connection.user + " devicename " + connection.devicename + " to userMap");
         return;
     }
@@ -540,17 +595,19 @@ function getSidFromCookies(cookies) {
      return filtered.length > 0 ? filtered[0].value : null;
 }
 
-function textProcess(conn) {
-    console.log(message.utf8Data);
+function textProcess(conn, message) {
+    console.log('from client browser ' + message.utf8Data);
     if((typeof conn.sess_username == "undefined")
        || (typeof conn.sess_devicename == 'undefined')) {
         // Check login
-        connection.close();
+        conn.close();
         return false;
     }
 
     var mgr = userMap.get(conn.sess_username);
     if((typeof mgr == 'undefined') || (null == mgr)) {
+        console.log("the user is gone ?");
+        conn.close();
         return false;
     }
 
@@ -560,28 +617,31 @@ function textProcess(conn) {
         }
 
         // From browser, Parse handshake
-        mgr.newSeq(function (seq) {
-            conn.seq = seq;
-            var processor = new forwardProcessor(seq);
+        var processor = mgr.newSeq(function (seq) {
+            var processor = new forwardProcessor(conn, seq);
             return processor;
         });
+        conn.seq = processor.seq;
+        console.log("created browser processor seq=" + conn.seq);
 
         var obj = {};
         obj.seq = conn.seq;
         obj.type = "handshake";
         obj.message = "hello";
         conn.sendUTF(JSON.stringify(obj));
+
+        return true;
     }
 
     //Message from browser, forward to web-tunnel client
-    try {
+    //try {
         var obj = JSON.parse(message.utf8Data);
         if(obj.seq != conn.seq) {
             console.log("Forward websocket, the seq is error");
             return false;
         }
 
-        var client_conn = mgr.getCurr();
+        var client_conn = mgr.getCurrConn();
         if((typeof client_conn == "undefined") || (null == client_conn)) {
             console.log("client connection losted");
             return false;
@@ -589,49 +649,80 @@ function textProcess(conn) {
 
         if(obj.type == "openning") {
             //event to client, prepare for telnet
-            var buf = new Buffer(4);
+            var buf = new Buffer(8);
             var port = parseInt(obj.message);
-            buf.writeUInt16BE(conn.seq, port);
+            buf.writeUInt16BE(conn.seq, 0);
+            buf.writeUInt16BE(port, 2);
+            buf.writeUInt32BE(0, 4);
             var bufs = createReq([buf], 0x10, conn.seq);
             client_conn.sendBytes(bufs);
+            console.log("openning new connection to client");
         }
         else {
             //Just forward to client
             var buf = new Buffer(obj.message);
             var bufs = createReq([buf], 0x11, conn.seq);
             client_conn.sendBytes(bufs);
+            console.log("forward " + obj.message + " to client");
         }
 
         return true;
-    } catch(e) {
+    /*} catch(e) {
+        console.log("got json parsing error hear " + e);
         return false;
-    }
+    }*/
+}
+
+function closeForward(mgr, conn) {
+    //TODO client timeout for closing
+    console.log("closing the forward client seq=" + conn.seq);
+    var client_conn = mgr.getConnByName(conn.sess_devicename);
+    var buf = new Buffer(8);
+    var port = 23;  //Not used
+    buf.writeUInt16BE(conn.seq, 0);
+    buf.writeUInt16BE(port, 2);
+    buf.writeUInt32BE(1, 4); //To close it
+    var bufs = createReq([buf], 0x10, conn.seq);
+    client_conn.sendBytes(bufs);
+    mgr.delSeq(mgr.curr_seq);
 }
 
 function newConnection(request, sess) {
     var connection = request.accept(request.origin);
 
-    if((typeof sess != "undefined")
-          && (typeof sess.username != "undefined")) {
-          connection.sess_username = sess.username;
-          connection.sess_devicename = sess.devicename;
+    if(typeof sess != "undefined") {
+        connection.sess_username = sess.username;
+        connection.sess_devicename = sess.devicename;
+        console.log("got browser connecting, user=" + sess.username + " devicename " + sess.devicename);
     }
 
-    console.log((new Date()) + " dumb-increment-protocol connection accepted from " + connection.remoteAddress +
-                " - Protocol Version " + connection.webSocketVersion + " origin - " + request.origin);
+    //console.log((new Date()) + " dumb-increment-protocol connection accepted from " + connection.remoteAddress +
+    //            " - Protocol Version " + connection.webSocketVersion + " origin - " + request.origin);
 
     //TODO wait for handshake, if timeout, delete it.
     connection.on('message', function(message) {
         if (message.type === 'utf8') {
-            textProcess(connection);
+            textProcess(this, message);
         }
         else {
             connectionParse(this, message);
         }
     });
     connection.on('close', function(closeReason, description) {
+        //console.log("connection closing user=" + this.user + " session user = " + this.sess_username);
         if(typeof this.user != "undefined") {
-            userMap.remove(this.user);
+            var mgr = userMap.get(this.user);
+            if((typeof mgr != "undefined")
+               && (typeof this.devicename != "undefined")) {
+                    mgr.delConnByName(conn.devicename);
+            }
+        }
+        else if(typeof this.sess_username != "undefined") {
+            var mgr = userMap.get(this.sess_username);
+            if((typeof mgr != "undefined")
+               && (typeof this.seq != "undefined")){
+                    closeForward(mgr, this);
+            }
         }
     });
 }
@@ -642,7 +733,7 @@ router.mount('*', 'dumb-increment-protocol', function(request) {
     parseCookie(request.httpRequest, null, function(err) {
         var connect_sid = getSidFromCookies(request.cookies);
         store.get(connect_sid, function(err, sess) {
-            console.log("The session is " + sess + " connect.sid= " + connect_sid );
+            //console.log("The session is " + sess + " connect.sid= " + connect_sid );
             newConnection(request, sess);
         });
     });
@@ -685,7 +776,7 @@ app.get("/__testreq", function(req, res) {
         return;
     }
 
-    var conn = mgr.getConn();
+    var conn = mgr.getCurrConn();
     var tmp_buf = new Buffer(4);
     tmp_buf.writeUInt32BE(0x88999988, 0);
     var bufs = createReq([tmp_buf], 0x5, 0x88);
@@ -702,8 +793,15 @@ function pipeFile(res, fileName) {
     var filePath = path.join(__dirname, 'public/' + fileName);
     var stat = fileSystem.statSync(filePath);
 
+    var contentType = '';
+    if(fileName.endsWith(".js")) {
+        contentType = "text/plain";
+    }
+    else {
+        contentType = 'text/html; charset=UTF-8';
+    }
     res.writeHead(200, {
-    'Content-Type': 'text/html; charset=UTF-8',
+    'Content-Type': contentType,
     'Content-Length': stat.size
     });
 
@@ -715,7 +813,7 @@ function pipeFile(res, fileName) {
 //app.all
 app.get("/__login", function(req, res) {
     pipeFile(res, 'login.html');
-}
+});
 
 app.post("/__login", function(req, res) {
     var query = req.body.toString();
@@ -730,7 +828,7 @@ app.post("/__login", function(req, res) {
     var mgr = userMap.get(username);
     if((typeof mgr == "undefined")
        || (null == mgr) ) {
-            res.send("The device of username = " + username + " is not found !");
+            res.send("The user of username = " + username + " is not found !");
         return;
        }
 
@@ -749,19 +847,27 @@ app.get("/__logout", function(req, res) {
 
 app.get("/__list", function(req, res){
     var sess = req.session;
-    var obj = {};
 
     if(typeof sess.username == "undefined") {
         res.redirect("/__login");
         return;
     }
 
-    var keys = [];
-    userMap.forEach(function(value, key) {
-        keys.push(key);
-    });
+    var mgr = userMap.get(sess.username);
+    var obj = {};
+    var devices = [];
 
-    obj.keys = keys;
+    if(typeof mgr != 'undefined' && null != mgr) {
+        mgr.forEachDevices(function(key) {
+            devices.push(key);
+        });
+    }
+
+    obj.devices = devices;
+    obj.current = "";
+    if(typeof mgr.getCurrDevice() != "undefined") {
+        obj.current = mgr.getCurrDevice();
+    }
 
     res.writeHead(200, {
     "Content-Type" : "application/json"
@@ -769,58 +875,109 @@ app.get("/__list", function(req, res){
     res.end(JSON.stringify(obj));
 });
 
-app.get("/__iframe", function(req, res) {
-    var sess = req.session;
-    if(typeof sess.username == "undefined") {
-        res.redirect('/__devices');
-        return;
-    }
-    var username = sess.username;
-    var mgr = userMap.get(username);
-    if((typeof mgr == "undefined")
-       || (null == mgr) ) {
-        delete sess.username;
-        res.redirect('/__devices');
-        return;
-    }
-
-    pipFile('iframe.html');
-});
-
 app.get("/__devices", function(req, res) {
-    pipFile('devices.html');
+    var sess = req.session;
+
+    if(typeof sess.username == "undefined") {
+        res.redirect("/__login");
+        return;
+    }
+
+    var mgr = userMap.get(sess.username);
+
+    if(typeof mgr == 'undefined' || null == mgr) {
+        res.redirect("/__login");
+        return;
+    }
+
+    pipeFile(res, 'devices.html');
 });
 
-app.get("/__device/*", function(req, res) {
-    var username = req.url.substring('/__device/'.length);
+// Set the current controlling device
+app.get("/__device/:dev", function(req, res) {
+    var sess = req.session;
+    var device = req.param("dev");
+    console.log(" connecting to " + device);
 
-    if(username == "") {
+    if(typeof sess.username == 'undefined') {
+        res.send("Not user login");
+        return;
+    }
+
+    var mgr = userMap.get(sess.username);
+
+    if(typeof mgr == 'undefined' || device == "") {
+        res.send("Not device name!");
+        return;
+    }
+    var conn = mgr.getConnByName(device);
+    if(typeof conn == 'undefined') {
         res.send("Not device name!");
         return;
     }
 
-    var mgr = userMap.get(username);
-    if((typeof mgr == "undefined")
-       || (null == mgr) ) {
-            res.send("The device of name = " + username + " is not found !");
-        return;
-       }
+    if(typeof conn.devicename == 'undefined') {
+        console.log("warn: devicename of conn is not set");
+        conn.devicename = device;
+    }
 
-    var sess = req.session;
-    sess.username = username;
-    res.redirect('/__iframe');
+    mgr.setCurr(device);
+
+    //For browser connection
+    sess.devicename = device;
+
+    res.redirect('/');
 });
 
-app.all("/__(.*)", function(req, res) {
-    var filePath = path.join(__dirname, 'public/' + req.params[0] + ".js");
-    pipeFile(res, filePath);
+app.get("/__do-telnet", function(req, res) {
+    pipeFile(res, 'websocket.html');
+});
+
+// TODO Make this better
+app.get("/__telnet/:dev", function(req, res) {
+    var sess = req.session;
+    var device = req.param("dev");
+    console.log(" connecting to " + device);
+
+    if(typeof sess.username == 'undefined') {
+        res.send("Not user login");
+        return;
+    }
+
+    var mgr = userMap.get(sess.username);
+
+    if(typeof mgr == 'undefined' || device == "") {
+        res.send("Not device name!");
+        return;
+    }
+    var conn = mgr.getConnByName(device);
+    if(typeof conn == 'undefined') {
+        res.send("Not device name!");
+        return;
+    }
+
+    if(typeof conn.devicename == 'undefined') {
+        console.log("warn: devicename of conn is not set");
+        conn.devicename = device;
+    }
+
+    mgr.setCurr(device);
+
+    //For browser connection
+    sess.devicename = device;
+
+    res.redirect("/__do-telnet");
+});
+
+app.get("/__jquery.js", function(req, res) {
+    pipeFile(res, "jquery.js");
 });
 
 app.all("*", function (req, res) {
     //console.log(req.session);
     var sess = req.session;
     if(typeof sess.username == "undefined") {
-        res.redirect('/__devices');
+        res.redirect('/__login');
         return;
     }
     var username = sess.username;
@@ -828,11 +985,15 @@ app.all("*", function (req, res) {
     if((typeof mgr == "undefined")
        || (null == mgr) ) {
            delete sess.username;
-        res.redirect('/__devices');
+        res.redirect('/__login');
         return;
     }
 
-    var conn = mgr.getConn();
+    var conn = mgr.getCurrConn();
+    if(typeof conn == 'undefined') {
+        res.redirect("/__devices");
+        return;
+    }
 
     var ignores = ["accept-encoding", "connection"];
 
@@ -860,22 +1021,22 @@ app.all("*", function (req, res) {
         strHeader += p + ": " + header[p] + "\r\n";
     }
     strHeader += "connection: close\r\n\r\n";
-    console.log("header is\n" + strHeader);
+    //console.log("header is\n" + strHeader);
 
     var b1 = new Buffer(strHeader);
     var bufs = [b1];
-    console.log(strHeader);
+    //console.log(strHeader);
     if("POST" == req.method.toUpperCase()) {
         bufs.push(req.body);
-        console.log(req.body.toString());
+        //console.log(req.body.toString());
     }
 
    var processor = mgr.newSeq(function (seq) {
-       return httpProcessor(req, res, seq);
+       return new httpProcessor(req, res, seq);
    });
    console.log("new seq=" + processor.seq);
 
-   var bufs2 = createReq2(bufs, 1, processor.seq);
+   var bufs2 = createReqBuffers(bufs, 1, processor.seq);
    for(var i = 0; i < bufs2.length; i++) {
         conn.sendBytes(bufs2[i]);
    }

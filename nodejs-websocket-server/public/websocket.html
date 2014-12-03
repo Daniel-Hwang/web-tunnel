@@ -3,7 +3,7 @@
 <head>
  <meta charset=utf-8 />
  <title>Minimal Websocket test app</title>
- <script src="/__jquery-latest.min.js" type="text/javascript"></script>
+ <script src="/__jquery.js" type="text/javascript"></script>
 </head>
 
 <body>
@@ -13,49 +13,58 @@
 <script>
 function get_appropriate_ws_url()
 {
-	var pcol;
-	var u = document.URL;
+    var pcol;
+    var u = document.URL;
 
-	/*
-	 * We open the websocket encrypted if this page came on an
-	 * https:// url itself, otherwise unencrypted
-	 */
+    /*
+     * We open the websocket encrypted if this page came on an
+     * https:// url itself, otherwise unencrypted
+     */
 
-	if (u.substring(0, 5) == "https") {
-		pcol = "wss://";
-		u = u.substr(8);
-	} else {
-		pcol = "ws://";
-		if (u.substring(0, 4) == "http")
-			u = u.substr(7);
-	}
+    if (u.substring(0, 5) == "https") {
+        pcol = "wss://";
+        u = u.substr(8);
+    } else {
+        pcol = "ws://";
+        if (u.substring(0, 4) == "http")
+            u = u.substr(7);
+    }
 
-	u = u.split('/');
+    u = u.split('/');
 
-	return pcol + u[0];
+    return pcol + u[0];
 }
 var ws_ctor = window['MozWebSocket'] ? window['MozWebSocket'] : window['WebSocket'];
 var socket_di = new ws_ctor(get_appropriate_ws_url(),
-			   "dumb-increment-protocol");  
+               "dumb-increment-protocol");  
 try {
-	socket_di.onopen = function() {
-		$("#pannel").html("opening");
-		socket_di.send("hello");
-	} 
+    socket_di.onopen = function() {
+        $("#pannel").html("opening");
+        socket_di.send("hello");
+    } 
 
-	socket_di.onmessage = function got_packet(msg) {
-		$("#pannel").html(" got " + msg.data);
-	} 
+    socket_di.onmessage = function got_packet(msg) {
+        $("#pannel").html($("#pannel").html() + " got " + msg.data);
+        var obj = $.parseJSON(msg.data);
+        if(obj.type == "handshake") {
+            var newObj = {};
+            newObj.seq = obj.seq;
+            newObj.type = "openning";
+            newObj.message = "23";
+            var s = JSON.stringify(newObj);
+            socket_di.send(s);
+        }
+    } 
 
-	socket_di.onclose = function(){
-		$("#pannel").html("closed ");
-	}
+    socket_di.onclose = function(){
+        $("#pannel").html("closed ");
+    }
 } catch(exception) {
-	$("#pannel").html(" got " + exception);
+    $("#pannel").html(" got " + exception);
 }
 
 function reset() {
-	socket_di.send("reset\n");
+    socket_di.send("reset\n");
 }
 
 function closeIncrementConnection() {

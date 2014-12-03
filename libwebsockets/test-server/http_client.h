@@ -20,22 +20,22 @@
 #define HTTP_C_TUNNELREQ    0x5
 #define HTTP_C_TUNNELRESP   0x6
 
-#define HTTP_C_FORWARD 	      0x10
+#define HTTP_C_FORWARD        0x10
 #define HTTP_C_FORWARD_REQ    0x11
 #define HTTP_C_FORWARD_RESP   0x12
 
 #define HTTP_C_HEADER_LEN   sizeof(http_c_header)
 
-#define HTTP_C_EVT_AUTH 	0x88999966
-#define HTTP_C_EVT_RESET	0x88999988
-#define HTTP_C_EVT_FAIL		0x88999998
+#define HTTP_C_EVT_AUTH     0x88999966
+#define HTTP_C_EVT_RESET    0x88999988
+#define HTTP_C_EVT_FAIL     0x88999998
 
 #define CONTEXT_TYPE_HTTP       0x1
 #define CONTEXT_TYPE_TCPSERVER  0x2
 #define CONTEXT_TYPE_TCPCLIENT  0x3
-#define CONTEXT_TYPE_FORWARD 	0x4
+#define CONTEXT_TYPE_FORWARD    0x4
 
-#define HTTP_TIMEOUT_SECS 	8
+#define HTTP_TIMEOUT_SECS   8
 
 typedef struct _http_c_header {
     unsigned int    magic;
@@ -181,18 +181,18 @@ typedef struct _tcp_forward_context {
 
     struct list_head        node;
     CALLING_STATUS          status;
-    TCP_FORWARD_FUNC 	    func_run;
+    TCP_FORWARD_FUNC        func_run;
 
     //http_buf                buf_read;
     http_buf                buf_write;
     int                     idle;
-    //int 		    is_writing;
-    int 		    errcode;
+    //int           is_writing;
+    int             errcode;
 
     struct pollfd*          pfd;
     int                     fwd_fd;
-    int 		    port;
-    int 		    seq;
+    int             port;
+    int             seq;
 } tcp_forward_context;
 
 typedef struct _http_mgmt {
@@ -228,8 +228,8 @@ typedef struct _http_mgmt {
     int             local_port;
 
     tcp_server_context      tcp_server;
-    struct list_head 	    list_forward;
-    int 		    len_forward;
+    struct list_head        list_forward;
+    int             len_forward;
 
     struct list_head        ctx_caches;
     struct list_head        http_buf_caches;
