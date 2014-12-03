@@ -1183,7 +1183,9 @@ int http_parse(http_mgmt* mgmt, http_context* ctx)
         if((NULL != buf_info) && (buf_info != last_buf)) {
             free_buf(mgmt, buf_info);
         }
-        list_splice(plist, &mgmt->http_buf_caches);
+        if(NULL != plist) {
+            list_splice(plist, &mgmt->http_buf_caches);
+        }
         last_buf = NULL;
         buf_info = NULL;
     }
