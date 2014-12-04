@@ -699,6 +699,9 @@ function closeForward(mgr, conn) {
     //TODO client timeout for closing
     console.log("closing the forward client seq=" + conn.seq);
     var client_conn = mgr.getConnByName(conn.sess_devicename);
+    if(typeof client_conn == "undefined") {
+        return;     //TODO make this better
+    }
     var buf = new Buffer(8);
     var port = 23;  //Not used
     buf.writeUInt16BE(conn.seq, 0);
