@@ -40,7 +40,7 @@ var mime_types = {
 };
 
 var cfg = {
-    ssl: true,
+    ssl: false,
     port: 8060,
     ssl_key: '/home/janson/projects/nodejs/ws/examples/tmp/privatekey.pem',
     ssl_cert: '/home/janson/projects/nodejs/ws/examples/tmp/certificate.pem'
