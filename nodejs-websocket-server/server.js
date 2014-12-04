@@ -818,18 +818,34 @@ app.get("/__sessiontest", function(req, res) {
 
 function pipeFile(res, fileName) {
     var filePath = path.join(__dirname, 'public/' + fileName);
-    var stat = fileSystem.statSync(filePath);
-    var ext = path.extname(filePath);
-    ext = ext ? ext.slice(1) : 'unknown';
 
-    var contentType = (mime_types[ext] || "text/plain");
-    res.writeHead(200, {
-    'Content-Type': contentType,
-    'Content-Length': stat.size
-    });
+    var isError = false;
+    try {
+        var stat = fileSystem.statSync(filePath);
+        if(!stat.isDirectory()) {
+            var ext = path.extname(filePath);
+            ext = ext ? ext.slice(1) : 'unknown';
 
-    var readStream = fileSystem.createReadStream(filePath);
-    readStream.pipe(res);
+            var contentType = (mime_types[ext] || "text/plain");
+            res.writeHead(200, {
+            'Content-Type': contentType,
+            'Content-Length': stat.size
+            });
+
+            var readStream = fileSystem.createReadStream(filePath);
+            readStream.pipe(res);
+        }
+        else {
+            isError = true;
+        }
+    }
+    catch(e) {
+        isError = true;
+    }
+
+    if(isError) {
+        res.write("not found resource");
+    }
 }
 
 //WebServer
