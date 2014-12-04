@@ -166,7 +166,7 @@ function encode_message() {
         return (new Uint8Array(sQ)).buffer;
     } else {
         // base64 encode
-	console.log("on Base64");
+	//console.log("on Base64");
 	var msg = Base64.encode(sQ);
         var newObj = {};
         newObj.seq = the_seq;
@@ -279,7 +279,7 @@ function recv_message(e) {
 
 
 // Set event handlers
-function on(evt, handler) { 
+function on(evt, handler) {
     eventHandlers[evt] = handler;
 }
 

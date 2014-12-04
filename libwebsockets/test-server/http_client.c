@@ -2112,6 +2112,7 @@ int process_tcp_forwardresp(http_mgmt *mgmt)
     }
 
     list_splice_tail_init(&pbuf->list_todo, &tcp_forward->buf_write.list_todo);
+    assert(NULL == pbuf->curr);
     release_prepare(mgmt);  //Reset the buf_prepare
 
     if(tcp_forward->idle) {
@@ -2134,15 +2135,13 @@ int tcp_forward_write(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
     /* Set to busy */
     tcp_forward->idle = 0;
 
-    //Have to set every time
-    buf_info = tcp_forward->buf_write.curr;
-
     lwsl_info("tcp_forward_write\n");
 
     ccrBegin(tcp_forward);
 
     /* Only run once */
     tcp_forward->buf_write.curr = next_buf_info(&tcp_forward->buf_write.list_todo);
+    buf_info = tcp_forward->buf_write.curr;
 
 
     while(buf_info != NULL)
@@ -2191,6 +2190,7 @@ int tcp_forward_write(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
 // read and forward to websocket
 int tcp_forward_read(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
 {
+#define WEBSOCK_MIN_PACK_SIZE 40
     int n, left;
     http_c_header *header;
     CALLER_STATUS status = CALLER_PENDING;
@@ -2215,6 +2215,12 @@ int tcp_forward_read(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
 
             buf_info->start = 0;
             buf_info->len = n + HTTP_C_HEADER_LEN;
+            //Set the min package size
+            if(buf_info->len < WEBSOCK_MIN_PACK_SIZE) {
+                memset(buf_info->buf + n + HTTP_C_HEADER_LEN
+                        , '\0', WEBSOCK_MIN_PACK_SIZE - buf_info->len);
+                buf_info->len = WEBSOCK_MIN_PACK_SIZE;
+            }
             buf_info->total_len = buf_info->len;
 
             header->magic = htonl(HTTP_C_MAGIC);
