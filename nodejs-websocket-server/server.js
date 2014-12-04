@@ -72,7 +72,8 @@ var httpProcessor = (function () {
         this.headerOk = false;
         this.headerStr = "";
         this.start = 0;
-        this.jsInsert = false;
+//        this.jsInsert = false;
+        this.jsInsert = true;       //TODO support for change js and cached
         this.jsStr = "";
     }
     HttpProcessor.prototype = {
@@ -199,7 +200,7 @@ var httpProcessor = (function () {
             this.jsStr += '<script src="/__custom.js"></script>' + buf2.toString();
             this.res.write(this.jsStr);
             this.jsInsert = true;
-            ths.jsStr = '';
+            this.jsStr = '';
         }
     };
 
