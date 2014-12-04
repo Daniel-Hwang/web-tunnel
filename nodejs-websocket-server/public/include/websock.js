@@ -161,13 +161,13 @@ function rQwait(msg, num, goback) {
 
 function encode_message() {
     if (mode === 'binary') {
-	console.log("on binary");
+    console.log("on binary");
         // Put in a binary arraybuffer
         return (new Uint8Array(sQ)).buffer;
     } else {
         // base64 encode
-	//console.log("on Base64");
-	var msg = Base64.encode(sQ);
+    //console.log("on Base64");
+    var msg = Base64.encode(sQ);
         var newObj = {};
         newObj.seq = the_seq;
         newObj.type = "request";
@@ -240,11 +240,11 @@ function recv_message(e) {
         var newObj = {};
         newObj.seq = obj.seq;
         newObj.type = "openning";
-        newObj.message = "23";
-	the_seq = obj.seq;
+        newObj.message = websocket.lan_host + ":23";
+        the_seq = obj.seq;
         var s = JSON.stringify(newObj);
         websocket.send(s);
-	return;
+        return;
     }
 
     try {
@@ -346,17 +346,18 @@ function init(protocols, ws_schema) {
     return protocols;
 }
 
-function open(uri, protocols) {
+function open(uri, lan_host) {
     var ws_schema = uri.match(/^([a-z]+):\/\//)[1];
     //protocols = init(protocols, ws_schema);
-    protocols = "dumb-increment-protocol";
+    var protocols = "dumb-increment-protocol";
     console.log("protocols is " + protocols);
 
     if (test_mode) {
         websocket = {};
     } else {
         websocket = new WebSocket(uri, protocols);
-	//TODO do better hear
+        websocket.lan_host = lan_host;
+        //TODO do better hear
         //if (protocols.indexOf('binary') >= 0) {
             websocket.binaryType = 'arraybuffer';
         //}
@@ -373,8 +374,8 @@ function open(uri, protocols) {
             Util.Error("Server select no sub-protocol!: " + websocket.protocol);
         }
 
-	//Handshake
-	websocket.send("hello");
+        //Handshake
+        websocket.send("hello");
 
         eventHandlers.open();
         Util.Debug("<< WebSock.onopen");

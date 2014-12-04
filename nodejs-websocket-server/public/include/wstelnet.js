@@ -105,9 +105,9 @@ function do_recv() {
                         arr[1] === 255 &&
                         arr[2] === 240) {
                         arr.shift(); arr.shift(); arr.shift();
-                        Util.Info("Send IAC SB TERM-TYPE IS(0) '" + 
+                        Util.Info("Send IAC SB TERM-TYPE IS(0) '" +
                                   termType + "' IAC SE");
-                        sQ.push(255, 250, 24, 0); 
+                        sQ.push(255, 250, 24, 0);
                         sQ.pushStr(termType);
                         sQ.push(255, 240);
                     } else {
@@ -144,10 +144,10 @@ function do_recv() {
 
 
 
-that.connect = function(uri) {
+that.connect = function(uri, lan_host) {
     Util.Info("connecting to " + uri);
 
-    ws.open(uri);
+    ws.open(uri, lan_host);
 
     Util.Debug("<< connect");
 }
@@ -278,13 +278,13 @@ function constructor() {
                 str = '\b'; break;
             case 65307: // Escape
                 str = '\x1b'; break;
-            case 65361: // Left arrow 
+            case 65361: // Left arrow
                 str = '\x1b[D'; break;
-            case 65362: // Up arrow 
+            case 65362: // Up arrow
                 str = '\x1b[A'; break;
-            case 65363: // Right arrow 
+            case 65363: // Right arrow
                 str = '\x1b[C'; break;
-            case 65364: // Down arrow 
+            case 65364: // Down arrow
                 str = '\x1b[B'; break;
             default:
                 Util.Info("Unrecoginized keysym " + keysym);

@@ -1,6 +1,7 @@
-<html>
-
+<!doctype html>
+<html lang="en">
     <head>
+        <meta charset="utf-8">
         <title>Telnet client using WebSockets</title>
         <script src="__include/base64.js"></script>
         <script src="__include/util.js"></script>
@@ -19,54 +20,68 @@
     </head>
 
     <body>
+        Host in lan: <input id='host' value="10.1.1.213" style='width:100'>&nbsp;
+        <input id='connectButton' type='button' value='Connect' style='width:100px'
+            onclick="connect();">&nbsp;
+
         <br><br>
 
         <pre id="terminal"></pre>
 
         <script>
-		function get_appropriate_ws_url()
-		{
-		    var pcol;
-		    var u = document.URL;
+        function get_appropriate_ws_url()
+        {
+            var pcol;
+            var u = document.URL;
 
-		    /*
-		     * We open the websocket encrypted if this page came on an
-		     * https:// url itself, otherwise unencrypted
-		     */
+            /*
+             * We open the websocket encrypted if this page came on an
+             * https:// url itself, otherwise unencrypted
+             */
 
-		    if (u.substring(0, 5) == "https") {
-			pcol = "wss://";
-			u = u.substr(8);
-		    } else {
-			pcol = "ws://";
-			if (u.substring(0, 4) == "http")
-			    u = u.substr(7);
-		    }
+            if (u.substring(0, 5) == "https") {
+               pcol = "wss://";
+                u = u.substr(8);
+            } else {
+                pcol = "ws://";
+            if (u.substring(0, 4) == "http")
+                u = u.substr(7);
+            }
 
-		    u = u.split('/');
+            u = u.split('/');
 
-		    return pcol + u[0];
-		}
+            return pcol + u[0];
+        }
 
             var telnet;
 
             function connect() {
-		var ws_url = get_appropriate_ws_url();
-		console.log("the url is " + ws_url);
-                telnet.connect(ws_url);
+                var ws_url = get_appropriate_ws_url();
+                console.log("the url is " + ws_url);
+                telnet.connect(ws_url, $D('host').value);
+            }
+
+            function disconnect() {
+                $D('connectButton').disabled = true;
+                $D('connectButton').value = "Disconnecting";
+                telnet.disconnect();
             }
 
             function connected() {
+                $D('connectButton').disabled = false;
+                $D('connectButton').value = "Disconnect";
+                $D('connectButton').onclick = disconnect;
             }
 
             function disconnected() {
+                $D('connectButton').disabled = false;
+                $D('connectButton').value = "Connect";
+                $D('connectButton').onclick = connect;
             }
 
             window.onload = function() {
                 console.log("onload");
                 telnet = Telnet('terminal', connected, disconnected);
-
-		connect();
             }
         </script>
 

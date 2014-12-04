@@ -23,8 +23,10 @@
 #define HTTP_C_FORWARD        0x10
 #define HTTP_C_FORWARD_REQ    0x11
 #define HTTP_C_FORWARD_RESP   0x12
+//#define HTTP_C_FORWARD_CLOSING   0x13
 
 #define HTTP_C_HEADER_LEN   sizeof(http_c_header)
+#define WEBSOCK_MIN_PACK_SIZE 40
 
 #define HTTP_C_EVT_AUTH     0x88999966
 #define HTTP_C_EVT_RESET    0x88999988
@@ -191,6 +193,7 @@ typedef struct _tcp_forward_context {
 
     struct pollfd*          pfd;
     int                     fwd_fd;
+    uint32_t        host;
     int             port;
     int             seq;
 } tcp_forward_context;

@@ -40,7 +40,7 @@ var mime_types = {
 };
 
 var cfg = {
-    ssl: false,
+    ssl: true,
     port: 8060,
     ssl_key: '/home/janson/projects/nodejs/ws/examples/tmp/privatekey.pem',
     ssl_cert: '/home/janson/projects/nodejs/ws/examples/tmp/certificate.pem'
@@ -228,7 +228,7 @@ var forwardProcessor = (function () {
                 obj.seq = mgr.curr_seq;
                 obj.type = "response";
                 obj.message = buffer.toString("base64");
-		//console.log("base64 string is :" + obj.message);
+                //console.log("base64 string is :" + obj.message);
                 var forward_conn = forward.getConn();
                 forward_conn.sendUTF(JSON.stringify(obj));
             }
@@ -671,14 +671,16 @@ function textProcess(conn, message) {
 
         if(obj.type == "openning") {
             //event to client, prepare for telnet
-            var buf = new Buffer(8);
-            var port = parseInt(obj.message);
+            var lan_host = obj.message.split(":")
+            var port = parseInt(lan_host[1]);
+            var buf = new Buffer(8 + Buffer.byteLength(lan_host[0]));
             buf.writeUInt16BE(conn.seq, 0);
             buf.writeUInt16BE(port, 2);
             buf.writeUInt32BE(0, 4);
+            buf.write(lan_host[0], 8);
             var bufs = createReq([buf], 0x10, conn.seq);
             client_conn.sendBytes(bufs);
-            console.log("openning new connection to client");
+            console.log("openning new connection to client lan_host=" + lan_host);
         }
         else {
             //Just forward to client

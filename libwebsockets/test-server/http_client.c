@@ -51,16 +51,17 @@ int tcp_client_read(http_mgmt* mgmt, tcp_client_context* tcp_client);
 int process_tunnel_req(http_mgmt* mgmt);
 int process_tunnel_resp(http_mgmt* mgmt);
 int process_tcp_forward(http_mgmt* mgmt);
-int tcp_forward_create(http_mgmt* mgmt, uint16_t seq, uint16_t port);
+int tcp_forward_create(http_mgmt* mgmt, uint16_t seq, char* host, uint16_t port);
 int tcp_forward_release(http_mgmt* mgmt, tcp_forward_context* tcp_forward);
 int tcp_forward_read(http_mgmt* mgmt, tcp_forward_context* tcp_forward);
 int tcp_forward_write(http_mgmt* mgmt, tcp_forward_context* tcp_forward);
 int process_tcp_forwardresp(http_mgmt *mgmt);
+int tcp_forward_closing(http_mgmt* mgmt, tcp_forward_context* tcp_forward);
 
 extern in_addr_t inet_addr(const char *cp);
 
 // Utils functions. move to the other file?
-static unsigned long name_resolve(char *host_name)
+static uint32_t name_resolve(char *host_name)
 {
     struct in_addr addr;
     struct hostent *host_ent;
@@ -2053,12 +2054,13 @@ int process_tcp_forward(http_mgmt* mgmt)
     unsigned short seq, port;
     unsigned int type;
     int the_len = 8;
+    char host[128];
 
     http_buf_info* buf_info;
     http_buf* pbuf = &mgmt->buf_prepare;
 
     /* The header is parsed */
-    if(pbuf->len != the_len) {
+    if(pbuf->len < the_len) {
         lwsl_warn("process packet forward, packet length not ok len=%d\n", pbuf->len);
         return -1;
     }
@@ -2073,7 +2075,10 @@ int process_tcp_forward(http_mgmt* mgmt)
 
     if(0 == type) {
         /* Now create tcp_forward */
-        tcp_forward_create(mgmt, seq, port);
+        memcpy(host, buf_info->buf+8, buf_info->len-8);
+        host[buf_info->len-8] = '\0';
+        host[buf_info->len-7] = '\0';
+        tcp_forward_create(mgmt, seq, host, port);
     }
     else {
         /* Delete the connection */
@@ -2190,7 +2195,6 @@ int tcp_forward_write(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
 // read and forward to websocket
 int tcp_forward_read(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
 {
-#define WEBSOCK_MIN_PACK_SIZE 40
     int n, left;
     http_c_header *header;
     CALLER_STATUS status = CALLER_PENDING;
@@ -2258,6 +2262,40 @@ int tcp_forward_read(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
     return status;
 }
 
+int tcp_forward_closing(http_mgmt* mgmt, tcp_forward_context* tcp_forward) {
+    http_buf_info* buf_info = NULL;
+    http_c_header* header;
+
+    buf_info = alloc_buf(mgmt);
+    if(NULL == buf_info) {
+        lwsl_warn("%s: cannot alloc buf ", __FUNCTION__);
+        return -1;
+    }
+    buf_info->start = 0;
+    buf_info->len = WEBSOCK_MIN_PACK_SIZE;
+    buf_info->total_len = buf_info->len;
+
+    header = (http_c_header*)buf_info->buf;
+    header->magic = htonl(HTTP_C_MAGIC);
+    header->version = HTTP_C_VERSION;
+    header->type = HTTP_C_FORWARD_RESP;
+    header->seq = htons(tcp_forward->seq);
+    header->length = htonl(buf_info->len);
+    header->reserved = 0;
+
+    memset(buf_info->buf+HTTP_C_HEADER_LEN
+            , '\0', WEBSOCK_MIN_PACK_SIZE - HTTP_C_HEADER_LEN);
+    memset(buf_info->buf+HTTP_C_HEADER_LEN, '\0'
+            , WEBSOCK_MIN_PACK_SIZE - HTTP_C_HEADER_LEN);
+    strcpy(buf_info->buf + HTTP_C_HEADER_LEN, "FAILED!");
+
+    list_add_tail(&buf_info->node, &mgmt->buf_toserver.list_todo);
+    http_mgmt_toserver(mgmt);
+
+    lwsl_info(" inform to server that forward failed\n ");
+    return 0;
+}
+
 int tcp_forward_connect(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
 {
     int rc;
@@ -2273,7 +2311,8 @@ int tcp_forward_connect(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
         memset(&server_addr, 0, sizeof(struct sockaddr));
         server_addr.sin_family = AF_INET;
         server_addr.sin_port = htons(tcp_forward->port);
-        server_addr.sin_addr.s_addr = name_resolve(mgmt->local_host);
+        //server_addr.sin_addr.s_addr = name_resolve(mgmt->local_host);
+        server_addr.sin_addr.s_addr = tcp_forward->host;
         lwsl_notice("tcp_forward before connect ctx->seq=%d\n", tcp_forward->seq);
         rc = connect(tcp_forward->fwd_fd, (struct sockaddr*) &server_addr, sizeof(struct sockaddr));
         if(rc >= 0)
@@ -2306,7 +2345,7 @@ int tcp_forward_connect(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
     ccrFinish(tcp_forward, CALLER_PENDING);
 }
 
-int tcp_forward_create(http_mgmt* mgmt, uint16_t seq, uint16_t port)
+int tcp_forward_create(http_mgmt* mgmt, uint16_t seq, char* host, uint16_t port)
 {
     int sockfd, rc = 0, optval = 0;
     tcp_forward_context* tcp_forward;
@@ -2326,6 +2365,7 @@ int tcp_forward_create(http_mgmt* mgmt, uint16_t seq, uint16_t port)
         //INIT_LIST_HEAD(&tcp_forward->node);
         tcp_forward->context_type = CONTEXT_TYPE_FORWARD;
         tcp_forward->seq = seq;
+        tcp_forward->host = name_resolve(host);
         tcp_forward->port = port;
 
         setsockopt(sockfd, SOL_TCP, TCP_NODELAY, (const void *)&optval, sizeof(optval));
@@ -2343,6 +2383,8 @@ int tcp_forward_create(http_mgmt* mgmt, uint16_t seq, uint16_t port)
 
         list_add(&tcp_forward->node, &mgmt->list_forward);
         mgmt->len_forward++;
+
+        lwsl_info("created forward to %s:%d\n", host, port);
     } while(0);
 
     if(0 != rc) {
@@ -2357,9 +2399,12 @@ int tcp_forward_release(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
 {
     assert(NULL != tcp_forward);
 
+    // First inform the server that the client is deleted
+    tcp_forward_closing(mgmt, tcp_forward);
+
     list_del(&tcp_forward->node);
 
-    lwsl_info("delete tcp_forward seq=%d ", tcp_forward->seq);
+    lwsl_info("delete tcp_forward seq=%d \n", tcp_forward->seq);
 
     if(tcp_forward->fwd_fd > 0) {
         mgmt_del_fd(mgmt, tcp_forward->fwd_fd);
