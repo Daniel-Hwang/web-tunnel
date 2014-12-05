@@ -72,4 +72,5 @@ tags
 Session.vim
 testsock
 nodejs-websocket-server/node_modules/
+localproxy/node_modules/
 config.json
