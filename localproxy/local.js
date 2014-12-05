@@ -265,5 +265,5 @@ remoteAcc.on('telnet', function (){
 });
 
 //Start login now
-remoteAcc.loginUser('everhomes', '');
+remoteAcc.loginUser(args.username, args.password);
 
