@@ -16,7 +16,8 @@
           devices = result.devices;
           for(var i = 0; i < devices.length; i++) {
               var s = '<li><span> ' + devices[i] +  ' </span> <a href="/__device/'+ devices[i] + '"><span> web control </span></a>';
-              s += '<a href="/__telnet/' + devices[i] + '"><span> telnet control </span></a> </li>';
+              s += '<a href="/__telnet/' + devices[i] + '"><span> telnet control </span></a> ';
+	      s += ' <a href="/__vnc/' + devices[i] + '"><span> destop </span></a> </li>';
               $("#divList ul").append(s);
           }
       });

@@ -169,7 +169,7 @@ function proxyService(proxySocket) {
     var connected = false;
     var buffers = new Array();
     var the_seq = 0;
-    var buf_failed = new Buffer("FAILED!").toString("base64").replace("==", "");
+    var buf_failed = new Buffer("CLOSED!").toString("base64").replace("==", "");
 
     var localWs = new WebSocketClient({
         webSocketVersion: args.version

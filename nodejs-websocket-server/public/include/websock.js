@@ -166,8 +166,8 @@ function encode_message() {
         return (new Uint8Array(sQ)).buffer;
     } else {
         // base64 encode
-    //console.log("on Base64");
-    var msg = Base64.encode(sQ);
+    	//console.log("on Base64");
+	var msg = Base64.encode(sQ);
         var newObj = {};
         newObj.seq = the_seq;
         newObj.type = "request";

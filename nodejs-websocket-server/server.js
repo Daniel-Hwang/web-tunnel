@@ -228,6 +228,12 @@ var forwardProcessor = (function () {
                 var obj = {};
                 obj.seq = mgr.curr_seq;
                 obj.type = "response";
+		var len = buffer.readUInt32BE(0);
+		if(len > (buffer.len+4)) {
+		    console.log("forward got error package");
+		    return;
+		}
+		buffer = buffer.slice(4, len+4);
                 obj.message = buffer.toString("base64");
                 //console.log("base64 string is :" + obj.message);
                 var forward_conn = forward.getConn();
@@ -933,81 +939,78 @@ app.get("/__devices", function(req, res) {
     pipeFile(res, 'devices.html');
 });
 
+function prepare_device(res, sess, device) {
+    console.log(" connecting to " + device);
+
+    if(typeof sess.username == 'undefined') {
+        res.send("Not user login");
+        return false;
+    }
+
+    var mgr = userMap.get(sess.username);
+
+    if(typeof mgr == 'undefined' || device == "") {
+        res.send("Not device name!");
+        return false;
+    }
+    var conn = mgr.getConnByName(device);
+    if(typeof conn == 'undefined') {
+        res.send("Not device name!");
+        return false;
+    }
+
+    if(typeof conn.devicename == 'undefined') {
+        console.log("warn: devicename of conn is not set");
+        conn.devicename = device;
+    }
+
+    mgr.setCurr(device);
+
+    //For browser connection
+    sess.devicename = device;
+
+    return true;
+
+}
+
 // Set the current controlling device
 app.get("/__device/:dev", function(req, res) {
     var sess = req.session;
     var device = req.param("dev");
-    console.log(" connecting to " + device);
-
-    if(typeof sess.username == 'undefined') {
-        res.send("Not user login");
+    if(!prepare_device(res, sess, device)) {
         return;
     }
-
-    var mgr = userMap.get(sess.username);
-
-    if(typeof mgr == 'undefined' || device == "") {
-        res.send("Not device name!");
-        return;
-    }
-    var conn = mgr.getConnByName(device);
-    if(typeof conn == 'undefined') {
-        res.send("Not device name!");
-        return;
-    }
-
-    if(typeof conn.devicename == 'undefined') {
-        console.log("warn: devicename of conn is not set");
-        conn.devicename = device;
-    }
-
-    mgr.setCurr(device);
-
-    //For browser connection
-    sess.devicename = device;
-
     res.redirect('/');
 });
 
 app.get("/__do-telnet", function(req, res) {
-    //pipeFile(res, 'websocket.html');
     pipeFile(res, "wstelnet.html");
 });
 
-// TODO Make this better
 app.get("/__telnet/:dev", function(req, res) {
     var sess = req.session;
     var device = req.param("dev");
-    console.log(" connecting to " + device);
 
-    if(typeof sess.username == 'undefined') {
-        res.send("Not user login");
+    if(!prepare_device(res, sess, device)) {
         return;
     }
-
-    var mgr = userMap.get(sess.username);
-
-    if(typeof mgr == 'undefined' || device == "") {
-        res.send("Not device name!");
-        return;
-    }
-    var conn = mgr.getConnByName(device);
-    if(typeof conn == 'undefined') {
-        res.send("Not device name!");
-        return;
-    }
-
-    if(typeof conn.devicename == 'undefined') {
-        console.log("warn: devicename of conn is not set");
-        conn.devicename = device;
-    }
-
-    mgr.setCurr(device);
-
-    //For browser connection
-    sess.devicename = device;
 
     res.redirect("/__do-telnet");
+});
+
+app.get("/__do-vnc", function(req, res) {
+    pipeFile(res, "vnc.html");
+});
+
+app.get("/__vnc/:dev", function(req, res) {
+    var sess = req.session;
+    var device = req.param("dev");
+
+    if(!prepare_device(res, sess, device)) {
+        return;
+    }
+
+    res.redirect("/__do-vnc");
 });
 
 app.get(/\__(.*)/, function(req, res) {

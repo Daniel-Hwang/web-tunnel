@@ -2195,8 +2195,8 @@ int tcp_forward_write(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
 // read and forward to websocket
 int tcp_forward_read(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
 {
-    int n, left;
     http_c_header *header;
+    int n, left, header_len = HTTP_C_HEADER_LEN + 4;
     CALLER_STATUS status = CALLER_PENDING;
     http_buf_info* buf_info = NULL;
 
@@ -2211,17 +2211,20 @@ int tcp_forward_read(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
             break;
         }
         header = (http_c_header*)buf_info->buf;
-        left = HTTP_BUF_SIZE - HTTP_C_HEADER_LEN;
+        left = HTTP_BUF_SIZE - header_len;
 
-        n = read(tcp_forward->fwd_fd, buf_info->buf + HTTP_C_HEADER_LEN, left);
+        n = read(tcp_forward->fwd_fd, buf_info->buf + header_len, left);
         if(n > 0) {
             lwsl_info("Tcp client got n=%d, forwarding to websocket server\n", n);
 
+            //Set the length
+            *((uint32_t*)(buf_info->buf + HTTP_C_HEADER_LEN)) = htonl(n);
+
             buf_info->start = 0;
-            buf_info->len = n + HTTP_C_HEADER_LEN;
+            buf_info->len = n + header_len;
             //Set the min package size
             if(buf_info->len < WEBSOCK_MIN_PACK_SIZE) {
-                memset(buf_info->buf + n + HTTP_C_HEADER_LEN
+                memset(buf_info->buf + n + header_len
                         , '\0', WEBSOCK_MIN_PACK_SIZE - buf_info->len);
                 buf_info->len = WEBSOCK_MIN_PACK_SIZE;
             }
@@ -2263,8 +2266,10 @@ int tcp_forward_read(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
 }
 
 int tcp_forward_closing(http_mgmt* mgmt, tcp_forward_context* tcp_forward) {
-    http_buf_info* buf_info = NULL;
     http_c_header* header;
+    int header_len = HTTP_C_HEADER_LEN + 4;
+    http_buf_info* buf_info = NULL;
+    char* failed = "CLOSED!";
 
     buf_info = alloc_buf(mgmt);
     if(NULL == buf_info) {
@@ -2283,11 +2288,12 @@ int tcp_forward_closing(http_mgmt* mgmt, tcp_forward_context* tcp_forward) {
     header->length = htonl(buf_info->len);
     header->reserved = 0;
 
-    memset(buf_info->buf+HTTP_C_HEADER_LEN
-            , '\0', WEBSOCK_MIN_PACK_SIZE - HTTP_C_HEADER_LEN);
-    memset(buf_info->buf+HTTP_C_HEADER_LEN, '\0'
-            , WEBSOCK_MIN_PACK_SIZE - HTTP_C_HEADER_LEN);
-    strcpy(buf_info->buf + HTTP_C_HEADER_LEN, "FAILED!");
+    memset(buf_info->buf+header_len
+            , '\0', WEBSOCK_MIN_PACK_SIZE - header_len);
+    memset(buf_info->buf+header_len, '\0'
+            , WEBSOCK_MIN_PACK_SIZE - header_len);
+    strcpy(buf_info->buf + header_len, failed);
+    *((uint32_t*)(buf_info->buf + HTTP_C_HEADER_LEN)) = htonl(strlen(failed)+1);
 
     list_add_tail(&buf_info->node, &mgmt->buf_toserver.list_todo);
     http_mgmt_toserver(mgmt);
