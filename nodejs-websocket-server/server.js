@@ -228,12 +228,12 @@ var forwardProcessor = (function () {
                 var obj = {};
                 obj.seq = mgr.curr_seq;
                 obj.type = "response";
-		var len = buffer.readUInt32BE(0);
-		if(len > (buffer.len+4)) {
-		    console.log("forward got error package");
-		    return;
-		}
-		buffer = buffer.slice(4, len+4);
+                var len = buffer.readUInt32BE(0);
+                if(len > (buffer.len+4)) {
+                    console.log("forward got error package");
+                    return;
+                }
+                buffer = buffer.slice(4, len+4);
                 obj.message = buffer.toString("base64");
                 //console.log("base64 string is :" + obj.message);
                 var forward_conn = forward.getConn();
@@ -260,6 +260,84 @@ var forwardProcessor = (function () {
     return ForwardProcessor;
 })();
 
+var webcamProcessor = (function () {
+    function Processor(host_url, seq, user) {
+        this.host_url = host_url;
+        this.seq = seq;
+        this.conns = {};
+        this.index = 0;
+        this.count = 0;
+        this.start = 0;
+        this.open = false;
+        this.username = user;
+        this.port = 0;
+    }
+    Processor.prototype = {
+        constructor:ForwardProcessor,
+        addConn: function(conn) {
+            var ind = this.index;
+            this.index++;
+            this.count++;
+
+            this.conns[ind] = conn;
+            return ind;
+        },
+        delByIndex: function(ind) {
+            this.count--;
+            if(0 >= this.count) {
+                this.closeConn();
+            }
+        },
+        isOpen: function() {
+            return this.isOpen;
+        },
+        processBuffer: function(mgr, buffer) {
+        },
+        openConn: function() {
+            var mgr = userMap.get(this.username);
+            if((typeof mgr == 'undefined') || (null == mgr)) {
+                return false;
+            }
+            var client_conn = mgr.getConnByName(conn.sess_devicename);
+            if(typeof client_conn == "undefined") {
+                return false;     //TODO make this better
+            }
+
+            var lan_host = this.host_url.split(":")
+            var port = parseInt(lan_host[1]);
+            var buf = new Buffer(8 + Buffer.byteLength(lan_host[0]));
+            buf.writeUInt16BE(this.seq, 0);
+            buf.writeUInt16BE(port, 2);
+            buf.writeUInt32BE(0, 4);
+            buf.write(lan_host[0], 8);
+            var bufs = createReq([buf], 0x10, conn.seq);
+            client_conn.sendBytes(bufs);
+            this.port = port;
+
+            this.isOpen = true;
+            return true;
+        },
+        closeConn: function() {
+            this.isOpen = false;
+            var client_conn = mgr.getConnByName(conn.sess_devicename);
+            if(typeof client_conn == "undefined") {
+                return false;     //TODO make this better
+            }
+            var buf = new Buffer(8);
+            var port = 23;  //Not used
+            buf.writeUInt16BE(this.seq, 0);
+            buf.writeUInt16BE(this.port, 2);
+            buf.writeUInt32BE(1, 4); //To close it
+            var bufs = createReq([buf], 0x10, conn.seq);
+            client_conn.sendBytes(bufs);
+
+            return true;
+        }
+    }
+
+    return Processor;
+})();
+
 //负责管理用户的各项数据
 var userMgmr = (function () {
     function UserMgmr(user) {
@@ -272,6 +350,7 @@ var userMgmr = (function () {
         this.cnt = 0;
         this.curr_seq = null;
         this.curr_total = 0;
+        this.cams = {};
     }
 
     UserMgmr.prototype = {
@@ -354,6 +433,20 @@ var userMgmr = (function () {
                 this.index2obj[this.cnt] = null;
             }
             return obj;
+        },
+        getCamByName: function(host_url) {
+            var processor = null;
+            var self = this;
+            if(typeof(this.cams[host_url]) == "undefined") {
+                processor = mgr.newSeq(function (seq) {
+                    var p = new webcamProcessor(host_url, seq, self.user);
+                    return p;
+                });
+            } else {
+                processor = this.cams[host_url];
+            }
+
+            return processor;
         }
     };
 
@@ -647,8 +740,8 @@ function textProcess(conn, message) {
 
         // From browser, Parse handshake
         var processor = mgr.newSeq(function (seq) {
-            var processor = new forwardProcessor(conn, seq);
-            return processor;
+            var p = new forwardProcessor(conn, seq);
+            return p;
         });
         conn.seq = processor.seq;
         console.log("created browser processor seq=" + conn.seq);
@@ -704,6 +797,54 @@ function textProcess(conn, message) {
     }*/
 }
 
+function webcamProcess(conn, message) {
+    if((typeof conn.sess_username == "undefined")
+       || (typeof conn.sess_devicename == 'undefined')) {
+        // Check login
+        conn.close();
+        return false;
+    }
+
+    var mgr = userMap.get(conn.sess_username);
+    if((typeof mgr == 'undefined') || (null == mgr)) {
+        console.log("the user is gone ?");
+        conn.close();
+        return false;
+    }
+    var client_conn = mgr.getCurrConn();
+    if((typeof client_conn == "undefined") || (null == client_conn)) {
+        console.log("client connection losted");
+        return false;
+    }
+
+    var host_url = "";
+    var host = "";
+    var port = 8080;
+    if(typeof conn.cam_seq == 'undefined') {
+        host_url = message.utf8Data;
+        host_port = host_url.split(':');
+        if(host_port.length != 2) {
+            console.log("the handshake from webcam is invalid");
+            conn.close();
+            return false;
+        }
+
+        host = host_port[0];
+        port = parseInt(host_port[1]);
+
+        camProcessor = mgr.getCamByName(host_url);
+        conn.cam_seq = camProcessor.addConn(conn);
+        conn.host_url = host_url;
+
+        if(!camProcessor.isOpen()) {
+            camProcessor.openConn();
+        }
+    }
+    //Ignore the other message
+
+    conn.close();
+}
+
 function closeForward(mgr, conn) {
     //TODO client timeout for closing
     console.log("closing the forward client seq=" + conn.seq);
@@ -722,6 +863,8 @@ function closeForward(mgr, conn) {
 }
 
 function newConnection(request, sess) {
+    var url = request.httpRequest.url;
+
     var connection = request.accept(request.origin);
 
     if(typeof sess != "undefined") {
@@ -736,7 +879,13 @@ function newConnection(request, sess) {
     //TODO wait for handshake, if timeout, delete it.
     connection.on('message', function(message) {
         if (message.type === 'utf8') {
-            textProcess(this, message);
+            console.log("the url is " + url);
+            if(url === "/__wscam") {
+                webcamProcess(this, message);
+            }
+            else {
+                textProcess(this, message);
+            }
         }
         else {
             connectionParse(this, message);
@@ -744,7 +893,18 @@ function newConnection(request, sess) {
     });
     connection.on('close', function(closeReason, description) {
         //console.log("connection closing user=" + this.user + " session user = " + this.sess_username);
-        if(typeof this.user != "undefined") {
+        // TODO the code is toooooo ugly, do better for this
+        if(typeof this.cam_seq == "undefined") {
+            if(typeof this.sess_username != "undefined")
+                var mgr = userMap.get(this.sess_username);
+                if((typeof mgr != "undefined")
+                   && (null != mgr)) {
+                       var camProcessor = mgr.getCamByName(this.host_url);
+                       camProcessor.delByIndex(this.cam_seq);
+                   }
+            }
+        }
+        else if(typeof this.user != "undefined") {
             var mgr = userMap.get(this.user);
             if((typeof mgr != "undefined")
                && (typeof this.devicename != "undefined")) {
@@ -764,6 +924,7 @@ function newConnection(request, sess) {
 router.mount('*', 'dumb-increment-protocol', function(request) {
     // Should do origin verification here. You have to pass the accepted
     // origin into the accept method of the request.
+
     parseCookie(request.httpRequest, null, function(err) {
         var connect_sid = getSidFromCookies(request.cookies);
         store.get(connect_sid, function(err, sess) {
@@ -1011,6 +1172,21 @@ app.get("/__vnc/:dev", function(req, res) {
     }
 
     res.redirect("/__do-vnc");
+});
+
+app.get("/__webcam/:dev", function(req, res) {
+    var sess = req.session;
+    var device = req.param("dev");
+
+    if(!prepare_device(res, sess, device)) {
+        return;
+    }
+
+    res.redirect("/__do-cam");
+});
+
+app.get("/__do-cam", function (req, res) {
+    pipeFile(res, "webcam.html");
 });
 
 app.get(/\__(.*)/, function(req, res) {
