@@ -39,6 +39,7 @@ void http_context_release(http_mgmt* mgmt, http_context* ctx);
 int http_context_connect(http_mgmt* mgmt, http_context* ctx);
 int http_context_write(http_mgmt* mgmt, http_context* ctx);
 int http_context_read(http_mgmt* mgmt, http_context* ctx);
+int http_context_finish(http_mgmt* mgmt, http_context* ctx);
 static http_buf_info* next_buf_info(struct list_head* list);
 http_buf_info* alloc_buf(http_mgmt* mgmt);
 int http_mgmt_toserver(http_mgmt* mgmt);
@@ -51,7 +52,7 @@ int tcp_client_read(http_mgmt* mgmt, tcp_client_context* tcp_client);
 int process_tunnel_req(http_mgmt* mgmt);
 int process_tunnel_resp(http_mgmt* mgmt);
 int process_tcp_forward(http_mgmt* mgmt);
-int tcp_forward_create(http_mgmt* mgmt, uint16_t seq, char* host, uint16_t port);
+int tcp_forward_create(http_mgmt* mgmt, uint16_t seq, char* host, uint16_t port, uint32_t type);
 int tcp_forward_release(http_mgmt* mgmt, tcp_forward_context* tcp_forward);
 int tcp_forward_read(http_mgmt* mgmt, tcp_forward_context* tcp_forward);
 int tcp_forward_write(http_mgmt* mgmt, tcp_forward_context* tcp_forward);
@@ -709,6 +710,10 @@ int http_mgmt_service(http_mgmt* mgmt, struct pollfd* pfd)
                 list_del(&ctx->node);
                 mgmt->ready_len--;
             }
+
+            if(CALLER_STATE_READ == ctx->state) {
+                http_context_finish(mgmt, ctx);
+            }
             http_context_release(mgmt, ctx);
         }
         else {
@@ -846,7 +851,7 @@ int http_context_connect(http_mgmt* mgmt, http_context* ctx)
         server_addr.sin_family = AF_INET;
         server_addr.sin_port = htons(ctx->port);
         server_addr.sin_addr.s_addr = name_resolve(ctx->hostname);
-        lwsl_notice("before connect ctx->seq=%d\n", ctx->seq);
+        lwsl_info("before connect host=%s port=%d ctx->seq=%d\n", ctx->hostname, ctx->port, ctx->seq);
         rc = connect(ctx->sockfd, (struct sockaddr*) &server_addr, sizeof(struct sockaddr));
         if(rc >= 0)
         {
@@ -942,6 +947,7 @@ int http_mgmt_toserver(http_mgmt* mgmt)
 {
     if(!mgmt->toserver)
     {
+        assert(NULL == mgmt->buf_toserver.curr);
         mgmt->buf_toserver.curr = next_buf_info(&mgmt->buf_toserver.list_todo);
         if(NULL != mgmt->buf_toserver.curr) {
             websocket_go_writable();
@@ -1023,6 +1029,7 @@ int http_parse(http_mgmt* mgmt, http_context* ctx)
         return -1;
     }
 
+    //TODO for out of memory
     rc = http_chunk_check(mgmt, ctx, buf_info);
     if(rc < 0) {
         return -1;
@@ -1193,12 +1200,48 @@ int http_parse(http_mgmt* mgmt, http_context* ctx)
     return rc;
 }
 
+int http_context_finish(http_mgmt* mgmt, http_context* ctx) {
+    http_c_header header;
+    http_buf_info* buf_info;
+
+    if(0 != http_parse(mgmt, ctx)) {
+        return -1;
+    }
+
+    //Init the header
+    header.magic = htonl(HTTP_C_MAGIC);
+    header.version = HTTP_C_VERSION;
+    header.type = HTTP_C_RESP;
+    ctx->buf_read.len += HTTP_C_HEADER_LEN;
+    header.length = htonl(ctx->buf_read.len);
+    header.seq = htons(ctx->seq);
+    header.reserved = 0;
+
+    buf_info = alloc_buf(mgmt);
+    memcpy(buf_info->buf, &header, HTTP_C_HEADER_LEN);
+    buf_info->start = 0;
+    buf_info->len = HTTP_C_HEADER_LEN;
+    buf_info->total_len = HTTP_C_HEADER_LEN;
+    // Add the header at first
+    list_add(&buf_info->node, &ctx->buf_read.list_todo);
+
+    lwsl_info("send total_len=%d seq=%d\n"
+            , ctx->buf_read.len, ctx->seq);
+
+    // Move to server lists
+    list_splice_tail_init(&ctx->buf_read.list_todo
+            , &mgmt->buf_toserver.list_todo);
+    ctx->buf_read.len = 0;
+    http_mgmt_toserver(mgmt);
+
+    return 0;
+}
+
 int http_context_read(http_mgmt* mgmt, http_context* ctx)
 {
     int n, left;
     struct pollfd* pfd;
     http_buf_info* buf_info;
-    http_c_header header;
 
     /* Never used like this
      ccrBeginContext
@@ -1241,37 +1284,10 @@ int http_context_read(http_mgmt* mgmt, http_context* ctx)
             } else {
                 context_save_read(ctx, buf_info);
                 buf_info = ctx->buf_read.curr;
+                assert(NULL == buf_info);
             }
 
-            if(0 != http_parse(mgmt, ctx)) {
-                ccrReturn(ctx, CALLER_FINISH);
-            }
-
-            //Init the header
-            header.magic = htonl(HTTP_C_MAGIC);
-            header.version = HTTP_C_VERSION;
-            header.type = HTTP_C_RESP;
-            ctx->buf_read.len += HTTP_C_HEADER_LEN;
-            header.length = htonl(ctx->buf_read.len);
-            header.seq = htons(ctx->seq);
-            header.reserved = 0;
-
-            buf_info = alloc_buf(mgmt);
-            memcpy(buf_info->buf, &header, HTTP_C_HEADER_LEN);
-            buf_info->start = 0;
-            buf_info->len = HTTP_C_HEADER_LEN;
-            buf_info->total_len = HTTP_C_HEADER_LEN;
-            // Add the header at first
-            list_add(&buf_info->node, &ctx->buf_read.list_todo);
-
-            lwsl_info("send total_len=%d seq=%d\n"
-                    , ctx->buf_read.len, ctx->seq);
-
-            // Move to server lists
-            list_splice_tail_init(&ctx->buf_read.list_todo
-                    , &mgmt->buf_toserver.list_todo);
-            ctx->buf_read.len = 0;
-            http_mgmt_toserver(mgmt);
+            http_context_finish(mgmt, ctx);
 
             ccrReturn(ctx, CALLER_FINISH);
         }
@@ -1334,11 +1350,11 @@ int http_context_init(http_mgmt* mgmt, http_context* ctx)
 //Get buf but not delete it
 static http_buf_info* next_buf_info(struct list_head* list)
 {
-    http_buf_info* buf_info = NULL;
+    http_buf_info *n, *buf_info = NULL;
 
     if(!list_empty(list))
     {
-        list_for_each_entry(buf_info, list, node) {
+        list_for_each_entry_safe(buf_info, n, list, node) {
             break;
         }
         //list_del(&buf_info->node);
@@ -1463,7 +1479,7 @@ int http_context_create(http_mgmt* mgmt, http_param* param)
 int http_mgmt_writable(void* context, void* wsi, http_mgmt* mgmt)
 {
     int n, rc = 0;
-    http_buf_info* buf_info;
+    http_buf_info* buf_info = NULL;
 
     assert(mgmt->toserver > 0);
 
@@ -1475,6 +1491,7 @@ int http_mgmt_writable(void* context, void* wsi, http_mgmt* mgmt)
             break;
         }
 
+        assert(0 != buf_info->len);
         n = websocket_write(wsi, buf_info->buf, buf_info->len);
         lwsl_info("websocket write len=%d\n", buf_info->len);
         if((n < 0) || (n < buf_info->len)) {
@@ -1485,7 +1502,14 @@ int http_mgmt_writable(void* context, void* wsi, http_mgmt* mgmt)
 
         list_del(&buf_info->node);
         free_buf(mgmt, buf_info);
+        buf_info = NULL;
     } while(0);
+
+    if(NULL != buf_info) {
+        // Free the buf_info
+        list_del(&buf_info->node);
+        free_buf(mgmt, buf_info);
+    }
 
     //Get but not free
     mgmt->buf_toserver.curr = next_buf_info(&mgmt->buf_toserver.list_todo);
@@ -1494,12 +1518,6 @@ int http_mgmt_writable(void* context, void* wsi, http_mgmt* mgmt)
     }
     else {
         mgmt->toserver = 0;
-    }
-
-    if(0 != rc) {
-        // Free the buf_info
-        list_del(&buf_info->node);
-        free_buf(mgmt, buf_info);
     }
 
     return rc;
@@ -1811,6 +1829,8 @@ int tcp_client_write(http_mgmt* mgmt, tcp_client_context* tcp_client)
 
     ccrBegin(tcp_client);
 
+    assert(NULL == buf_info);
+
     /* Only run once */
     tcp_client->buf_write.curr = next_buf_info(&tcp_client->buf_write.list_todo);
     buf_info = tcp_client->buf_write.curr;
@@ -2073,14 +2093,8 @@ int process_tcp_forward(http_mgmt* mgmt)
     port = htons(port);
     type = htonl(type);
 
-    if(0 == type) {
-        /* Now create tcp_forward */
-        memcpy(host, buf_info->buf+8, buf_info->len-8);
-        host[buf_info->len-8] = '\0';
-        host[buf_info->len-7] = '\0';
-        tcp_forward_create(mgmt, seq, host, port);
-    }
-    else {
+    //Closing by browser
+    if(1 == type) {
         /* Delete the connection */
         list_for_each_entry(tcp_forward, &mgmt->list_forward, node) {
             if(pbuf->seq == tcp_forward->seq) {
@@ -2094,6 +2108,13 @@ int process_tcp_forward(http_mgmt* mgmt)
         }
 
         tcp_forward_release(mgmt, tcp_forward);
+    }
+    else {
+        /* Now create tcp_forward */
+        memcpy(host, buf_info->buf+8, buf_info->len-8);
+        host[buf_info->len-8] = '\0';
+        host[buf_info->len-7] = '\0';
+        tcp_forward_create(mgmt, seq, host, port, type);
     }
 
     release_prepare(mgmt);
@@ -2143,6 +2164,8 @@ int tcp_forward_write(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
     lwsl_info("tcp_forward_write\n");
 
     ccrBegin(tcp_forward);
+
+    assert(NULL == buf_info);
 
     /* Only run once */
     tcp_forward->buf_write.curr = next_buf_info(&tcp_forward->buf_write.list_todo);
@@ -2351,7 +2374,7 @@ int tcp_forward_connect(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
     ccrFinish(tcp_forward, CALLER_PENDING);
 }
 
-int tcp_forward_create(http_mgmt* mgmt, uint16_t seq, char* host, uint16_t port)
+int tcp_forward_create(http_mgmt* mgmt, uint16_t seq, char* host, uint16_t port, uint32_t type)
 {
     int sockfd, rc = 0, optval = 0;
     tcp_forward_context* tcp_forward;
@@ -2373,6 +2396,7 @@ int tcp_forward_create(http_mgmt* mgmt, uint16_t seq, char* host, uint16_t port)
         tcp_forward->seq = seq;
         tcp_forward->host = name_resolve(host);
         tcp_forward->port = port;
+        tcp_forward->type = type;
 
         setsockopt(sockfd, SOL_TCP, TCP_NODELAY, (const void *)&optval, sizeof(optval));
         fcntl(sockfd, F_SETFL, O_NONBLOCK);
@@ -2390,7 +2414,7 @@ int tcp_forward_create(http_mgmt* mgmt, uint16_t seq, char* host, uint16_t port)
         list_add(&tcp_forward->node, &mgmt->list_forward);
         mgmt->len_forward++;
 
-        lwsl_info("created forward to %s:%d\n", host, port);
+        lwsl_info("created forward to %s:%d type=%d\n", host, port, type);
     } while(0);
 
     if(0 != rc) {
@@ -2406,8 +2430,11 @@ int tcp_forward_release(http_mgmt* mgmt, tcp_forward_context* tcp_forward)
     assert(NULL != tcp_forward);
 
     // First inform the server that the client is deleted
-    tcp_forward_closing(mgmt, tcp_forward);
+    //if(0 == tcp_forward->type) {
+        tcp_forward_closing(mgmt, tcp_forward);
+    //}
 
+    tcp_forward->status = CALLING_FINISH;
     list_del(&tcp_forward->node);
 
     lwsl_info("delete tcp_forward seq=%d \n", tcp_forward->seq);

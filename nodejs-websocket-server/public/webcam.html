@@ -29,13 +29,20 @@ function ready() {
     url += "/__wscam";
     console.log("the url is " + url);
     var socket_di = new ws_ctor(url, "dumb-increment-protocol");
+    var imageData = "";
     try {
         socket_di.onopen = function() {
             socket_di.send("127.0.0.1:8080");
         }
 
         socket_di.onmessage = function got_packet(msg) {
-            $("#image").attr('src', 'data:image/jpg;base64,' + msg.data);
+	    if(msg.data === "!!!END!!!") {
+            	$("#image").attr('src', 'data:image/jpg;base64,' + imageData);
+		imageData = "";
+	    }
+	    else {
+	    	imageData += msg.data;
+	    }
         }
 
         socket_di.onclose = function(){

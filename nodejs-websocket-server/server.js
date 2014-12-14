@@ -11,11 +11,20 @@ var Streamifier = require('streamifier');
 var fileSystem = require('fs');
 var path = require('path');
 var querystring = require("querystring");
+var util = require('util');
+var events = require('events');
+
+// set ts=4 sts=4 sw=4
 
 if (typeof String.prototype.endsWith !== 'function') {
     String.prototype.endsWith = function(suffix) {
         return this.indexOf(suffix, this.length - suffix.length) !== -1;
     };
+}
+if (typeof String.prototype.startsWith != 'function') {
+  String.prototype.startsWith = function (str){
+    return this.slice(0, str.length) == str;
+  };
 }
 
 var mime_types = {
@@ -261,81 +270,255 @@ var forwardProcessor = (function () {
 })();
 
 var webcamProcessor = (function () {
-    function Processor(host_url, seq, user) {
-        this.host_url = host_url;
+    function Processor(camMgr, seq) {
+		this.camMgr = camMgr;
         this.seq = seq;
-        this.conns = {};
-        this.index = 0;
-        this.count = 0;
+
         this.start = 0;
-        this.open = false;
-        this.username = user;
-        this.port = 0;
     }
-    Processor.prototype = {
-        constructor:ForwardProcessor,
-        addConn: function(conn) {
-            var ind = this.index;
-            this.index++;
-            this.count++;
 
-            this.conns[ind] = conn;
-            return ind;
-        },
-        delByIndex: function(ind) {
-            this.count--;
-            if(0 >= this.count) {
-                this.closeConn();
-            }
-        },
-        isOpen: function() {
-            return this.isOpen;
-        },
-        processBuffer: function(mgr, buffer) {
-        },
-        openConn: function() {
-            var mgr = userMap.get(this.username);
-            if((typeof mgr == 'undefined') || (null == mgr)) {
-                return false;
-            }
-            var client_conn = mgr.getConnByName(conn.sess_devicename);
-            if(typeof client_conn == "undefined") {
-                return false;     //TODO make this better
-            }
+   Processor.prototype.processBuffer = function(mgr, buf) {
+        this.start += buf.length;
+		//console.log("webcam processor hear\n");
 
-            var lan_host = this.host_url.split(":")
-            var port = parseInt(lan_host[1]);
-            var buf = new Buffer(8 + Buffer.byteLength(lan_host[0]));
-            buf.writeUInt16BE(this.seq, 0);
-            buf.writeUInt16BE(port, 2);
-            buf.writeUInt32BE(0, 4);
-            buf.write(lan_host[0], 8);
-            var bufs = createReq([buf], 0x10, conn.seq);
-            client_conn.sendBytes(bufs);
-            this.port = port;
+		var len = buf.readUInt32BE(0);
+		if(len > (buf.len+4)) {
+			console.log("forward got error package");
+			return;
+		}
+		var buffer = buf.slice(4, len+4);
 
-            this.isOpen = true;
-            return true;
-        },
-        closeConn: function() {
-            this.isOpen = false;
-            var client_conn = mgr.getConnByName(conn.sess_devicename);
-            if(typeof client_conn == "undefined") {
-                return false;     //TODO make this better
-            }
-            var buf = new Buffer(8);
-            var port = 23;  //Not used
-            buf.writeUInt16BE(this.seq, 0);
-            buf.writeUInt16BE(this.port, 2);
-            buf.writeUInt32BE(1, 4); //To close it
-            var bufs = createReq([buf], 0x10, conn.seq);
-            client_conn.sendBytes(bufs);
+		var processed = this.camMgr.processBuffer(mgr, buffer, this.seq);
 
-            return true;
-        }
+		if(this.start >= mgr.curr_total) {
+			this.start = 0;
+			if(!processed) {
+				mgr.delSeq(mgr.curr_seq);
+			}
+
+			mgr.curr_seq = null;
+			mgr.curr_total = 0;
+			mgr.tmp_bufs = [];
+			mgr.tmp_bufs_len = 0;
+		}
+    }
+    Processor.prototype.doConn = function(mgr) {
+		var host = this.camMgr.host;
+		var port = this.camMgr.port;
+		var client_conn = mgr.getCurrConn();
+		if(typeof client_conn == "undefined") {
+			console.log("web the client conn is null");
+			return false;     //TODO make this better
+		}
+
+		var buf = new Buffer(8 + Buffer.byteLength(host));
+		buf.writeUInt16BE(this.seq, 0);
+		buf.writeUInt16BE(port, 2);
+		buf.writeUInt32BE(2, 4);
+		buf.write(host, 8);
+		var bufs = createReq([buf], 0x10, this.seq);
+		client_conn.sendBytes(bufs);
+
+		//Now send the http header
+		var requestString = "GET /?action=snapshot&n=" + this.seq + "HTTP/1.1\r\nHost:";
+		requestString += this.host + ":" + this.port + "\r\n";
+		requestString += "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:24.0) Gecko/20100101 Firefox/24.0\r\n";
+			requestString += "Accept: image/png,image/*;q=0.8,*/*;q=0.5\r\n";
+		requestString += "Accept-Language: zh-cn,zh;q=0.8,en-us;q=0.5,en;q=0.3\r\n";
+		requestString += "Connection: Close\r\n\r\n";
+		buf = new Buffer(requestString);
+		bufs = createReq([buf], 0x11, this.seq);
+		client_conn.sendBytes(bufs);
+
+		return true;
     }
 
     return Processor;
+})();
+
+var webcamManager = (function () {
+	function Manager(host_url, user) {
+		this.host_url = host_url;
+		this.username = user;
+		this.total_len = 0;
+		this.isOpen = false;
+
+		this.conns = {};
+		this.conn_count = 0;
+		this.conn_index = 0;
+
+		var lan_host = this.host_url.split(":")
+		this.host = lan_host[0];
+		this.port = parseInt(lan_host[1]);
+		//console.log("webcamManager host = " + this.host + " port " + this.port);
+
+        this.headerOk = false;
+        this.headerStr = "";
+		this.currSeq = -1;
+		this.total_len = 0;
+		this.curr_len = 0;
+		this.bufs = [];
+
+        events.EventEmitter.call(this);
+    }
+    util.inherits(Manager, events.EventEmitter);
+
+    Manager.prototype.addConn = function(conn) {
+		var ind = this.conn_index;
+		this.conns[ind] = conn;
+		this.conn_count++;
+		this.conn_index++;
+
+		if(!this.isOpen) {
+			this.openConn();
+		}
+    }
+
+    Manager.prototype.delConn = function(ind) {
+        if(typeof this.conns[ind] != "undefined") {
+			delete this.conns[ind];
+		}
+		this.conn_count--;
+		if(0 == this.conn_count) {
+			this.isOpen = false;	
+		}
+    }
+
+    Manager.prototype.openConn = function() {
+		if(this.isOpen) {
+			return;
+		}
+		var self = this;
+		self.isOpen = true;
+
+		self.on("doReq", function() {
+			if(!self.isOpen) {
+				return;
+			}
+			self.isReady = false;
+			self.doConn();
+			setTimeout(function () {
+				self.readyForNew();
+			}, 200);
+		});
+
+        self.emit("doReq");
+    }
+	Manager.prototype.readyForNew = function() {
+		var isReady = this.isReady;
+		this.isReady = true;
+		if(isReady) {
+		   this.emit("doReq");
+		}
+	}
+	Manager.prototype.doConn = function() {
+        var mgr = userMap.get(this.username);
+		var self = this;
+		var processor = mgr.newSeq(function (seq) {
+			var p = new webcamProcessor(self, seq);
+			return p;
+		});
+
+		processor.doConn(mgr);
+	}
+	Manager.prototype.processBuffer = function(mgr, buffer, seq) {
+		if(this.currSeq == -1) {
+			this.currSeq = seq;
+		}
+		else if(this.currSeq != seq) {
+			console.log("webcamManager currSeq error newSeq=" + seq + " old seq = " + this.currSeq);
+			return false;
+		}
+		if(!this.headerOk) {
+			this.processHeader(mgr, buffer);
+		} else {
+			this.innerProcessBuffer(mgr, buffer, seq);
+		}
+		return true;
+	}
+    Manager.prototype.innerProcessBuffer = function(mgr, buffer, seq) {
+		//console.log("inner process buffer len=", buffer.length);
+		var close_str = "CLOSED!";
+		var buf_str = "";
+		if(buffer.length <= 40) {
+			buf_str = buffer.toString();
+			//console.log("buf_str is " + buf_str);
+		}
+		if(buf_str.startsWith(close_str)) {
+            mgr.delSeq(seq);
+			var endBuf = new Buffer("!!!END!!!");
+			var newBuf = Buffer.concat(this.bufs);
+			var newS = newBuf.toString("base64");
+			for(var key in this.conns) {
+				var conn = this.conns[key];
+				conn.sendUTF(newS);
+				conn.sendUTF(endBuf);
+			}
+
+			console.log("send one frame total_len=" + this.total_len + " curr_len = " + this.curr_len);
+			this.bufs = [];
+			this.total_len = 0;
+			this.curr_len = 0;
+			this.currSeq = -1;
+
+			this.readyForNew();
+		}
+		else {
+			this.bufs.push(buffer);
+			this.curr_len += buffer.length;
+		}
+
+		//if(this.curr_len >= this.total_len) {
+		//}
+   }
+   Manager.prototype.processHeader = function(mgr, buffer) {
+       var endstr = "\r\n\r\n";
+       var oldLen = Buffer.byteLength(this.headerStr);
+       this.headerStr += buffer.toString();
+       var i = this.headerStr.indexOf(endstr);
+       var offset = 0;
+
+       if(i < 0) {
+		   return -1;
+       } else {
+		   this.headerStr = this.headerStr.substring(0, i+endstr.length);
+		   offset = Buffer.byteLength(this.headerStr) - oldLen;
+       }
+
+       //Parse header now
+       var arr = this.headerStr.split("\r\n");
+       if(arr.length < 2) {
+		   console.log("parse header error");
+		   return -2;
+       }
+
+       var pattern = /\d{3,3}/;
+       var match = pattern.exec(arr[0]);
+       if(null == match) {
+		   console.log("parse header error, not matched");
+		   return -2;
+       }
+
+       for(var i = 1; i < arr.length; i++) {
+		   var ts = arr[i].split(":");
+		   if(ts.length != 2) {
+			   continue;
+		   }
+		   if(ts[0].toLowerCase() === "content-length") {
+			   this.total_len = parseInt(ts[1].replace(/^\s+|\s+$/g, ""));
+			   break;
+		   } 
+       }
+       //console.log("got total len = " + this.total_len);
+
+       if((buffer.length - offset) > 0) {
+		   var buf2 = buffer.slice(offset, buffer.length);
+		   this.innerProcessBuffer(mgr, buf2);
+       }
+       return 0;
+   }
+
+    return Manager;
 })();
 
 //负责管理用户的各项数据
@@ -435,18 +618,17 @@ var userMgmr = (function () {
             return obj;
         },
         getCamByName: function(host_url) {
-            var processor = null;
             var self = this;
+            var camMgr = null;
             if(typeof(this.cams[host_url]) == "undefined") {
-                processor = mgr.newSeq(function (seq) {
-                    var p = new webcamProcessor(host_url, seq, self.user);
-                    return p;
-                });
+				camMgr = new webcamManager(host_url, this.user);
+				this.cams[host_url] = camMgr;
             } else {
-                processor = this.cams[host_url];
+                camMgr = this.cams[host_url];
             }
 
-            return processor;
+			//console.log(" camMgr test " + camMgr.addConn);
+            return camMgr;
         }
     };
 
@@ -623,7 +805,7 @@ function parseNormalMessage(conn, buffer) {
     var mgr = userMap.get(conn.user);
 
     if(null == mgr.curr_seq) {
-        console.log("parse the first message");
+        //console.log("parse the first message");
         if(buffer.length < protocolHeaderLen) {
             console.log("the buffer is too smaller " + buffer.length);
             mgr.tmp_bufs.push(buffer);
@@ -653,7 +835,7 @@ function parseNormalMessage(conn, buffer) {
 
         mgr.curr_seq = protoHeader.seq;
         mgr.curr_total = protoHeader.length;
-        console.log("get curr_seq = " + mgr.curr_seq + "total len = " + mgr.curr_total);
+        //console.log("get curr_seq = " + mgr.curr_seq + " total len = " + mgr.curr_total);
         mgr.curr_total -=  protocolHeaderLen; //exclude the header length
 
         if(buffer.length > protocolHeaderLen) {
@@ -832,17 +1014,16 @@ function webcamProcess(conn, message) {
         host = host_port[0];
         port = parseInt(host_port[1]);
 
-        camProcessor = mgr.getCamByName(host_url);
-        conn.cam_seq = camProcessor.addConn(conn);
+        camMgr = mgr.getCamByName(host_url);
+        conn.cam_seq = camMgr.addConn(conn);
         conn.host_url = host_url;
 
-        if(!camProcessor.isOpen()) {
-            camProcessor.openConn();
-        }
+		console.log("webcam host_url is " + host_url);
+
+		camMgr.openConn();
     }
     //Ignore the other message
-
-    conn.close();
+    //conn.close();
 }
 
 function closeForward(mgr, conn) {
@@ -894,13 +1075,13 @@ function newConnection(request, sess) {
     connection.on('close', function(closeReason, description) {
         //console.log("connection closing user=" + this.user + " session user = " + this.sess_username);
         // TODO the code is toooooo ugly, do better for this
-        if(typeof this.cam_seq == "undefined") {
-            if(typeof this.sess_username != "undefined")
+        if(typeof this.cam_seq != "undefined") {
+            if(typeof this.sess_username != "undefined") {
                 var mgr = userMap.get(this.sess_username);
                 if((typeof mgr != "undefined")
                    && (null != mgr)) {
-                       var camProcessor = mgr.getCamByName(this.host_url);
-                       camProcessor.delByIndex(this.cam_seq);
+                       var camMgr = mgr.getCamByName(this.host_url);
+                       camMgr.delConn(this.cam_seq);
                    }
             }
         }
@@ -1186,7 +1367,49 @@ app.get("/__webcam/:dev", function(req, res) {
 });
 
 app.get("/__do-cam", function (req, res) {
-    pipeFile(res, "webcam.html");
+    pipeFile(res, "jswebcam.html");
+});
+
+app.get("/__camsnap", function (req, res) {
+    var sess = req.session;
+    if(typeof sess.username == "undefined") {
+        res.redirect('/__login');
+        return;
+    }
+    var username = sess.username;
+    var mgr = userMap.get(username);
+    if((typeof mgr == "undefined")
+       || (null == mgr) ) {
+           delete sess.username;
+        res.redirect('/__login');
+        return;
+    }
+
+    var conn = mgr.getCurrConn();
+    if(typeof conn == 'undefined') {
+        res.redirect("/__devices");
+        return;
+    }
+   var processor = mgr.newSeq(function (seq) {
+       return new httpProcessor(req, res, seq);
+   });
+   var seq = processor.seq;
+   var host = "127.0.0.1";
+   var port = 8080;
+
+	var requestString = "GET /?action=snapshot HTTP/1.1\r\n";
+	requestString += "host:" + host + ":" + port + "\r\n";
+	requestString += "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:24.0) Gecko/20100101 Firefox/24.0\r\n";
+	requestString += "Accept: image/png,image/*;q=0.8,*/*;q=0.5\r\n";
+	requestString += "Accept-Language: zh-cn,zh;q=0.8,en-us;q=0.5,en;q=0.3\r\n";
+	requestString += "Cache-Control:max-age=0\r\nConnection: Close\r\n\r\n";
+    var b1 = new Buffer(requestString);
+    var bufs = [b1];
+
+   var bufs2 = createReqBuffers(bufs, 1, processor.seq);
+   for(var i = 0; i < bufs2.length; i++) {
+        conn.sendBytes(bufs2[i]);
+   }
 });
 
 app.get(/\__(.*)/, function(req, res) {

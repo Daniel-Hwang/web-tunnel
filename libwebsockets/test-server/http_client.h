@@ -5,7 +5,7 @@
 #include "coroutine.h"
 
 #define CALLER_CACHES   256
-#define HTTPBUF_CACHES  600
+#define HTTPBUF_CACHES  256
 #define HTTP_BUF_SIZE   2048
 #define HTTP_CHUNK_MAX  32
 #define HTTP_IN_MAX     20480
@@ -190,6 +190,7 @@ typedef struct _tcp_forward_context {
     int                     idle;
     //int           is_writing;
     int             errcode;
+    int 		type; //0 is normal 1 is close 2 is webcam
 
     struct pollfd*          pfd;
     int                     fwd_fd;
